@@ -31,6 +31,7 @@ import pandas as pd
 from cmapss import (
     LONG_WINDOW,
     RAW_COLS,
+    SHORT_WINDOW,
     build_features,
     health_status,
     rul_to_health,
@@ -43,6 +44,21 @@ _model = _bundle["model"]
 _feature_cols = _bundle["feature_cols"]
 RUL_CAP = _bundle["rul_cap"]
 MODEL_NAME = _bundle["model_name"]
+
+_DERIVED = (f"_mean{SHORT_WINDOW}", f"_mean{LONG_WINDOW}", f"_std{SHORT_WINDOW}", "_drift", "_trend")
+
+
+def _feature_slot(col: str) -> tuple[int, int]:
+    """(block, channel) for a model column. Block 0 is cycle, 1 the raw value, 2-6 follow _DERIVED."""
+    if col == "cycle":
+        return 0, 0
+    for block, suffix in enumerate(_DERIVED, start=2):
+        if col.endswith(suffix):
+            return block, RAW_COLS.index(col[: -len(suffix)])
+    return 1, RAW_COLS.index(col)
+
+
+_SLOTS = np.array([_feature_slot(c) for c in _feature_cols])
 
 
 # Healthy mean, healthy standard deviation, and total drift from healthy to worn out, per
@@ -89,13 +105,47 @@ def _frame_from_history(history: list[dict]) -> pd.DataFrame:
     return frame
 
 
+def reference_features(history: list[dict]) -> pd.Series:
+    """Newest-row features via the training code path. Slow; kept to check the fast path against."""
+    features = build_features(_frame_from_history(history))
+    return features.iloc[-1].reindex(_feature_cols, fill_value=0.0)
+
+
+def latest_features(history: list[dict]) -> np.ndarray:
+    """
+    The newest row of build_features() for one engine, computed with numpy.
+
+    A live monitor only ever scores its newest reading, so the full pandas rolling pass
+    (~80 ms) is wasted work. Values match build_features to floating-point noise; the test
+    in test_predict.py holds the two paths together.
+    """
+    try:
+        values = np.array([[row[c] for c in RAW_COLS] for row in history], dtype=float)
+        cycle = float(history[-1]["cycle"])
+    except KeyError as exc:
+        raise ValueError(f"Telemetry is missing required field {exc}") from None
+    last = values[-1]
+    short = values[-SHORT_WINDOW:]
+    short_mean = short.mean(axis=0)
+    long_mean = values[-LONG_WINDOW:].mean(axis=0)
+    short_std = short.std(axis=0, ddof=1) if len(short) > 1 else np.zeros_like(last)
+    blocks = np.vstack(
+        [np.full_like(last, cycle), last, short_mean, long_mean, short_std, last - values[0], short_mean - long_mean]
+    )
+    return blocks[_SLOTS[:, 0], _SLOTS[:, 1]]
+
+
+def predict_rul_many(histories: list[list[dict]]) -> list[float]:
+    """Remaining cycles for several engines' newest readings in one model call."""
+    if not histories:
+        return []
+    X = pd.DataFrame(np.vstack([latest_features(h) for h in histories]), columns=_feature_cols)
+    return [float(np.clip(r, 0.0, RUL_CAP)) for r in _model.predict(X)]
+
+
 def _predict_rul(history: list[dict]) -> float:
     """Predict remaining cycles from the newest reading, informed by prior readings."""
-    frame = _frame_from_history(history)
-    features = build_features(frame)
-    latest = features.iloc[[-1]].reindex(columns=_feature_cols, fill_value=0.0)
-    rul = float(_model.predict(latest)[0])
-    return float(np.clip(rul, 0.0, RUL_CAP))
+    return predict_rul_many([history])[0]
 
 
 def predict_health(sensor_row: dict) -> float:
@@ -136,11 +186,22 @@ class HealthMonitor:
 
     def update(self, sensor_row: dict) -> dict:
         """Record a reading and return the resulting health assessment."""
+        self.record(sensor_row)
+        return self.assess(_predict_rul(self._history))
+
+    def record(self, sensor_row: dict) -> None:
+        """Append a reading without scoring it; pair with update_many for batched scoring."""
         self._history.append(dict(sensor_row))
         self._trim()
 
-        rul = _predict_rul(self._history)
+    @property
+    def history(self) -> list[dict]:
+        return self._history
+
+    def assess(self, rul: float) -> dict:
+        """Package a predicted RUL for the newest recorded reading."""
         health = rul_to_health(rul)
+        sensor_row = self._history[-1] if self._history else {}
         return {
             "drone_id": self.drone_id,
             "cycle": sensor_row.get("cycle"),
@@ -164,6 +225,14 @@ class HealthMonitor:
 
     def reset(self) -> None:
         self._history.clear()
+
+
+def update_many(monitors: list[HealthMonitor], readings: list[dict]) -> list[dict]:
+    """Record one reading per monitor and score them all in a single model call."""
+    for monitor, reading in zip(monitors, readings):
+        monitor.record(reading)
+    ruls = predict_rul_many([m.history for m in monitors])
+    return [m.assess(rul) for m, rul in zip(monitors, ruls)]
 
 
 def simulate_drone_telemetry(
