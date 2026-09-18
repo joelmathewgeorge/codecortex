@@ -1,6 +1,6 @@
 # Drone Airspace Guardian Frontend Design
 
-**Date:** 2026-09-18  
+**Date:** 2026-09-18
 **Status:** Approved
 **Scope:** `drone-airspace-guardian/frontend/` only
 
