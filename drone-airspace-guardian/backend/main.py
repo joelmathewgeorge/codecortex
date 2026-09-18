@@ -1,328 +1,309 @@
 """
-Drone Airspace Guardian — Backend Server
+Drone Airspace Guardian API.
 
-This is the main entry point. It creates the FastAPI app with:
-    - WebSocket /ws       → pushes drone positions every ~1 second
-    - POST     /zones     → create a no-fly zone
-    - GET      /zones     → list all zones
-    - POST     /emergency → create emergency zone + immediate conflict check
+    WS     /ws           "hello" with the event history on connect, then a "state" snapshot
+                         every second and an "events" message whenever something happened
+    GET    /world        static map: bounds, real restricted airspace (with buffers), drone
+                         ports, hospitals, ground-monitor sites, planner constants
+    GET    /state        latest snapshot
+    GET    /events       event history (?limit=)
+    POST   /drones       add a drone               {"mode": "auto" | "random" | "encounter"}
+    POST   /zones        operator no-fly ring      {"lat", "lon", "radius"?}
+    POST   /emergency    emergency zone            {"lat", "lon", "radius"?}
+    DELETE /zones/{id}   lift a zone
+    POST   /reset        fresh fleet, zones cleared, event log restarted
+    POST   /sim          simulation speed          {"speed": 1 | 2 | 4}
+    GET    /media/...    AU-AIR / VisDrone frames behind the camera feed
 
-HOW TO RUN:
-    cd backend
-    .venv/Scripts/activate       (Windows)
-    source .venv/bin/activate    (Mac/Linux)
-    uvicorn main:app --reload
+Run from this folder:
+    python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
-    The --reload flag watches for file changes and auto-restarts.
-    Great during development, remove it in production.
-
-HOW TO TEST (no frontend needed):
-    pip install websockets    (already in requirements.txt)
-    python -m websockets ws://localhost:8000/ws
-
-    You'll see drone position JSON every second in the terminal.
+AIR_TRAFFIC=replay skips the live OpenSky feed and replays recorded flights instead.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+import traceback
+from contextlib import asynccontextmanager
+from typing import Literal
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-from pathlib import Path
-
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from drones import Drone, create_default_drones, mark_proximity, reset_fleet
-from health_bridge import reset_monitors, warmup as warmup_ml
-from vision_bridge import current_vision, snapshot_vision, warmup_vision
-from zones import add_zone, clear_zones, get_all_zones
+from config import (
+    AIRCRAFT_SEPARATION,
+    ALT_MAX_M,
+    ALT_MIN_M,
+    AUAIR_DIR,
+    CELL_M,
+    COST_AIRCRAFT,
+    COST_CONGESTION,
+    COST_EMERGENCY_BUFFER,
+    COST_GROUND_AREA,
+    COST_LOW_BUFFER,
+    COST_NEAR_RESTRICTED,
+    DRONE_H_SEP_M,
+    DRONE_V_SEP_M,
+    EMERGENCY_RADIUS_M,
+    ML_DIR,
+    OPERATOR_ZONE_RADIUS_M,
+    PREDICT_HORIZON_S,
+    SIM_SPEEDS,
+    TICK_S,
+)
+from sim import Simulation
+from vision_bridge import Detector
 
-# ---------------------------------------------------------------------------
-# FastAPI app setup
-# ---------------------------------------------------------------------------
+GROUND_SCORE_EVERY_S = 2.0
+VISDRONE_DIR = ML_DIR / "vision_frames"
+
+sim = Simulation()
+detector = Detector()
+clients: set[WebSocket] = set()
+latest: dict[str, str | None] = {"state": None}
+
+
+def _locked(fn, *args, **kwargs):
+    with sim.lock:
+        return fn(*args, **kwargs)
+
+
+async def run_locked(fn, *args, **kwargs):
+    return await asyncio.to_thread(_locked, fn, *args, **kwargs)
+
+
+async def broadcast(text: str) -> None:
+    for ws in list(clients):
+        try:
+            await ws.send_text(text)
+        except Exception:
+            clients.discard(ws)
+
+
+def _snapshot_and_events() -> tuple[str, str | None]:
+    state = json.dumps(sim.snapshot(), separators=(",", ":"))
+    events = sim.events.drain()
+    latest["state"] = state
+    return state, (json.dumps({"type": "events", "events": events}, separators=(",", ":")) if events else None)
+
+
+async def push_now() -> None:
+    """Send the result of an operator command without waiting for the next tick."""
+    state, events = await run_locked(_snapshot_and_events)
+    if events:
+        await broadcast(events)
+    await broadcast(state)
+
+
+def _tick() -> tuple[str, str | None]:
+    with sim.lock:
+        sim.step(TICK_S)
+        return _snapshot_and_events()
+
+
+async def tick_loop() -> None:
+    loop = asyncio.get_running_loop()
+    while True:
+        started = loop.time()
+        try:
+            state, events = await asyncio.to_thread(_tick)
+            if events:
+                await broadcast(events)
+            await broadcast(state)
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(max(0.05, TICK_S - (loop.time() - started)))
+
+
+async def vision_loop() -> None:
+    await asyncio.to_thread(detector.load)
+    with sim.lock:
+        sim.ground.model_name = detector.name if detector.ready else "dataset labels"
+        sim.ground.metrics = detector.metrics()
+    while True:
+        try:
+            job = await run_locked(sim.ground_job)
+            if job:
+                site, frame = job
+                path = sim.ground.frame_path(frame)
+                detections = await asyncio.to_thread(detector.detect, path) if detector.ready and path.exists() else None
+                await run_locked(sim.ground_result, site, frame, detections, detector.name)
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(GROUND_SCORE_EVERY_S)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    tasks = [asyncio.create_task(tick_loop()), asyncio.create_task(vision_loop())]
+    yield
+    for task in tasks:
+        task.cancel()
+
 
 app = FastAPI(
     title="Drone Airspace Guardian",
-    description="Real-time drone tracking, no-fly zone management, and conflict detection.",
-    version="0.1.0",
+    description="Hybrid adaptive airspace planning over real Dubai airspace.",
+    version="0.2.0",
+    lifespan=lifespan,
 )
-
-# CORS middleware — allows Joel's frontend (running on a different port)
-# to call our API.  Without this, the browser blocks cross-origin requests.
-#
-# WHY allow_origins=["*"]?
-#   For development, we allow ALL origins. In production, you'd lock this
-#   down to the actual frontend URL.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------------------------------------------------------------------
-# Global state
-# ---------------------------------------------------------------------------
-
-# The 5 simulated drones — created once when the server starts
-drones: list[Drone] = create_default_drones()
-
-# All connected WebSocket clients — we broadcast to everyone
-connected_clients: set[WebSocket] = set()
-_vision: dict = current_vision()
-_tick = 0
-MEDIA_DIR = Path(__file__).resolve().parent.parent / "ml" / "vision_frames"
+# Two ports on one laptop (Next.js on 3000, this API on 8000); not a production posture.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-def _positions_payload(**extra) -> dict:
-    """Live map + camera snapshot. Extra keys (reset, type, timestamp) stay optional."""
-    payload = {
-        "type": "positions",
-        "drones": [d.to_dict() for d in drones],
-        "zones": [z.to_dict() for z in get_all_zones()],
-        "vision": _vision,
-        "city": "dubai",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    payload.update(extra)
-    return payload
+class ZoneBody(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    radius: float | None = Field(default=None, ge=100, le=3000)
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models for request validation
-# ---------------------------------------------------------------------------
-# WHY PYDANTIC?
-#   FastAPI uses Pydantic to automatically validate incoming JSON.
-#   If someone sends {"lat": "not-a-number"}, FastAPI returns a
-#   422 error with a helpful message — no manual validation needed.
-
-class ZoneCreate(BaseModel):
-    """Request body for POST /zones and POST /emergency."""
-    lat: float
-    lon: float
-    radius: float  # in metres
+class DroneBody(BaseModel):
+    mode: Literal["auto", "random", "encounter"] = "auto"
 
 
-# ---------------------------------------------------------------------------
-# Helper: broadcast a message to all connected WebSocket clients
-# ---------------------------------------------------------------------------
+class SpeedBody(BaseModel):
+    speed: int
 
-async def broadcast(message: dict) -> None:
-    """
-    Send a JSON message to every connected WebSocket client.
-
-    WHY NOT JUST websocket.send()?
-        We might have multiple frontends connected at once (Joel testing
-        on his machine, you testing on yours, etc.). We need to send to ALL.
-
-    If a client has disconnected, we catch the exception and remove it.
-    """
-    payload = json.dumps(message)
-    disconnected = set()
-
-    for ws in connected_clients:
-        try:
-            await ws.send_text(payload)
-        except Exception:
-            disconnected.add(ws)
-
-    # Clean up stale connections
-    connected_clients.difference_update(disconnected)
-
-
-# ---------------------------------------------------------------------------
-# Background task: simulation tick loop
-# ---------------------------------------------------------------------------
-
-async def simulation_loop() -> None:
-    """
-    Main simulation loop — runs every 1 second.
-
-    Each tick:
-        1. Move each drone (linear interpolation along its path)
-        2. Build the position payload
-        3. Broadcast to all WebSocket clients
-
-    WHY asyncio.sleep(1)?
-        This is cooperative multitasking. The sleep yields control back
-        to the event loop so FastAPI can handle HTTP requests (like
-        POST /zones) between ticks.
-    """
-    global _tick, _vision
-    while True:
-        for drone in drones:
-            drone.tick()
-        mark_proximity(drones)
-        _tick += 1
-        if _tick % 3 == 0:
-            _vision = await asyncio.to_thread(snapshot_vision)
-
-        await broadcast(_positions_payload())
-        await asyncio.sleep(1)
-
-
-# ---------------------------------------------------------------------------
-# Startup event: launch the simulation loop
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup():
-    """
-    Called once when the server starts.
-    Launches the simulation as a background asyncio task.
-
-    WHY create_task()?
-        We want the simulation to run concurrently with the HTTP/WS
-        server. create_task() schedules it on the event loop without
-        blocking the server from handling requests.
-    """
-    global _vision
-    warmup_ml()
-    warmup_vision()
-    _vision = current_vision()
-    asyncio.create_task(simulation_loop())
-
-
-# ---------------------------------------------------------------------------
-# WebSocket endpoint
-# ---------------------------------------------------------------------------
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time drone tracking.
-
-    LIFECYCLE:
-        1. Client connects → we accept and add them to the set
-        2. The simulation_loop broadcasts positions to them every second
-        3. Client disconnects → we remove them from the set
-
-    The receive loop is there to detect disconnections. We don't expect
-    the client to send us anything (yet), but WebSocket requires us
-    to read in order to detect when the connection closes.
-    """
-    await websocket.accept()
-    connected_clients.add(websocket)
-    await websocket.send_text(json.dumps(_positions_payload()))
-
+async def websocket_endpoint(ws: WebSocket) -> None:
+    await ws.accept()
+    clients.add(ws)
     try:
-        # Keep the connection alive by reading (even though we don't use the data)
+        history = await run_locked(sim.events.history, 800)
+        await ws.send_text(json.dumps({"type": "hello", "events": history}, separators=(",", ":")))
+        if latest["state"]:
+            await ws.send_text(latest["state"])
         while True:
-            await websocket.receive_text()
+            await ws.receive_text()
     except WebSocketDisconnect:
-        connected_clients.discard(websocket)
-
-
-# ---------------------------------------------------------------------------
-# REST endpoints
-# ---------------------------------------------------------------------------
-
-@app.post("/zones")
-async def create_zone(body: ZoneCreate):
-    """
-    Create a no-fly zone.
-
-    Request:  POST /zones  {"lat": 12.97, "lon": 77.59, "radius": 500}
-    Response: {"status": "created", "zone": {...}}
-
-    The zone is stored in memory and the conflict check runs automatically
-    on the next simulation tick (within ~1 second).
-    """
-    zone = add_zone(lat=body.lat, lon=body.lon, radius=body.radius)
-    return {"status": "created", "zone": zone.to_dict()}
-
-
-@app.get("/zones")
-async def list_zones():
-    """
-    List all active no-fly and emergency zones.
-
-    Response: {"zones": [{...}, {...}]}
-    """
-    return {"zones": [z.to_dict() for z in get_all_zones()]}
-
-
-@app.post("/emergency")
-async def create_emergency(body: ZoneCreate):
-    """
-    Create an emergency danger zone and IMMEDIATELY check for conflicts.
-
-    Unlike POST /zones, this doesn't wait for the next tick — it runs
-    the conflict check right now and broadcasts an alert.
-
-    Request:  POST /emergency  {"lat": 12.97, "lon": 77.59, "radius": 300}
-    Response: {"status": "emergency_created", "zone": {...}, "affected_drones": [...]}
-    """
-    zone = add_zone(lat=body.lat, lon=body.lon, radius=body.radius, emergency=True)
-
-    # Immediately check all drones
-    affected = []
-    for drone in drones:
-        conflicts = drone.force_reroute_check()
-        if conflicts:
-            affected.append(drone.id)
-
-    # Broadcast alert to all connected clients
-    alert = {
-        "type": "alert",
-        "zone": zone.to_dict(),
-        "affected_drones": affected,
-        "message": (
-            f"Airspace conflict — rerouting {len(affected)} drone(s)"
-            if affected
-            else "Emergency zone created — no drones in radius"
-        ),
-        "severity": "high",
-    }
-    await broadcast(alert)
-
-    return {
-        "status": "emergency_created",
-        "zone": zone.to_dict(),
-        "affected_drones": affected,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Health check endpoint (bonus — useful for monitoring)
-# ---------------------------------------------------------------------------
-
-@app.post("/reset")
-async def reset_demo():
-    """Clear zones, restore the five Dubai missions, and broadcast a clean snapshot."""
-    clear_zones()
-    reset_monitors()
-    reset_fleet(drones)
-    payload = _positions_payload(reset=True)
-    await broadcast(payload)
-    return {"status": "reset", "drones": len(drones), "zones": 0}
-
-
-@app.get("/state")
-async def get_state():
-    payload = _positions_payload()
-    payload.pop("type", None)
-    payload.pop("timestamp", None)
-    return payload
+        pass
+    finally:
+        clients.discard(ws)
 
 
 @app.get("/")
-async def root():
-    """Simple health check — confirms the server is running."""
+async def root() -> dict:
     return {
         "service": "Drone Airspace Guardian",
         "status": "running",
         "city": "dubai",
-        "drones": len(drones),
-        "zones": len(get_all_zones()),
+        "drones": len(sim.drones),
+        "restrictedAreas": len(sim.world.restricted),
+        "zones": len(sim.zones.zones),
+        "airTraffic": sim.aircraft.status,
+        "detector": detector.name,
     }
 
 
-if MEDIA_DIR.exists():
-    app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+@app.get("/world")
+async def world() -> dict:
+    def build() -> dict:
+        out = sim.world.to_dict()
+        out["groundSites"] = [
+            {"id": s.id, "name": s.name, "road": s.road, "lat": s.lat, "lon": s.lon, "radius": s.radius} for s in sim.ground.sites
+        ]
+        out["planner"] = {
+            "cellM": CELL_M,
+            "droneSeparation": {"horizontalM": DRONE_H_SEP_M, "verticalM": DRONE_V_SEP_M},
+            "aircraftSeparation": {k: {"horizontalM": h, "verticalM": v} for k, (h, v) in AIRCRAFT_SEPARATION.items()},
+            "predictionHorizonS": PREDICT_HORIZON_S,
+            "altitudeBandM": [ALT_MIN_M, ALT_MAX_M],
+            "costs": {
+                "normal": 1,
+                "lowRiskBuffer": COST_LOW_BUFFER,
+                "droneCongestion": COST_CONGESTION,
+                "groundRiskArea": COST_GROUND_AREA,
+                "nearRestricted": COST_NEAR_RESTRICTED,
+                "aircraftProximity": COST_AIRCRAFT,
+                "emergencyBuffer": COST_EMERGENCY_BUFFER,
+                "hard": "infinity",
+            },
+            "emergencyRadiusM": EMERGENCY_RADIUS_M,
+            "operatorRadiusM": OPERATOR_ZONE_RADIUS_M,
+            "simSpeeds": list(SIM_SPEEDS),
+        }
+        return out
+
+    return await run_locked(build)
+
+
+@app.get("/state")
+async def state() -> dict:
+    return await run_locked(sim.snapshot)
+
+
+@app.get("/events")
+async def events(limit: int = 500) -> dict:
+    return {"events": await run_locked(sim.events.history, max(1, min(limit, 2000)))}
+
+
+@app.post("/drones")
+async def add_drone(body: DroneBody | None = None) -> dict:
+    try:
+        result = await run_locked(sim.add_drone, (body or DroneBody()).mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await push_now()
+    return result
+
+
+async def _zone(kind: str, body: ZoneBody) -> dict:
+    try:
+        result = await run_locked(sim.add_zone, kind, body.lat, body.lon, body.radius)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await push_now()
+    return result
+
+
+@app.post("/zones")
+async def create_zone(body: ZoneBody) -> dict:
+    return await _zone("operator", body)
+
+
+@app.post("/emergency")
+async def create_emergency(body: ZoneBody) -> dict:
+    return await _zone("emergency", body)
+
+
+@app.delete("/zones/{zone_id}")
+async def delete_zone(zone_id: str) -> dict:
+    try:
+        result = await run_locked(sim.remove_zone, zone_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"no zone {zone_id}") from exc
+    await push_now()
+    return result
+
+
+@app.post("/sim")
+async def set_speed(body: SpeedBody) -> dict:
+    try:
+        await run_locked(sim.set_speed, body.speed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"speed": body.speed}
+
+
+@app.post("/reset")
+async def reset() -> dict:
+    def do_reset() -> list[dict]:
+        sim.reset()
+        sim.events.drain()  # clients get these through the hello below, not twice
+        return sim.events.history(800)
+
+    history = await run_locked(do_reset)
+    await broadcast(json.dumps({"type": "hello", "events": history, "reset": True}, separators=(",", ":")))
+    await push_now()
+    return {"status": "reset", "drones": len(sim.drones)}
+
+
+if AUAIR_DIR.exists():
+    app.mount("/media/auair", StaticFiles(directory=str(AUAIR_DIR)), name="auair")
+if VISDRONE_DIR.exists():
+    app.mount("/media/visdrone", StaticFiles(directory=str(VISDRONE_DIR)), name="visdrone")

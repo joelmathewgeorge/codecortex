@@ -1,58 +1,66 @@
-"""Quick test script — connects to WebSocket, prints 3 ticks, then tests POST /zones."""
+"""
+Smoke test against a running backend (python -m uvicorn main:app --port 8000).
+
+Reads the WebSocket hello and two state ticks, then exercises the REST surface: add a
+drone, draw a no-fly zone and an emergency zone in Downtown Dubai, lift them, and reset.
+
+Run: python test_server.py
+"""
+
 import asyncio
 import json
 import urllib.request
 
 import websockets
 
+API = "http://127.0.0.1:8000"
+WS = "ws://127.0.0.1:8000/ws"
+DOWNTOWN = (25.1972, 55.2744)
 
-async def test_websocket():
-    print("=== WebSocket Test (3 ticks) ===\n")
-    async with websockets.connect("ws://localhost:8000/ws") as ws:
-        for i in range(3):
+
+def call(method: str, path: str, body: dict | None = None) -> dict:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{API}{path}", data=data, method=method, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+async def watch_ws() -> None:
+    async with websockets.connect(WS, max_size=None) as ws:
+        hello = json.loads(await ws.recv())
+        print(f"hello: {len(hello['events'])} events in history")
+        states = 0
+        while states < 2:
             msg = json.loads(await ws.recv())
-            print(f"--- Tick {i + 1} ---")
-            print(f"Type: {msg['type']}")
-            print(f"Timestamp: {msg['timestamp']}")
-            for d in msg["drones"]:
-                print(f"  {d['id']}: ({d['lat']}, {d['lon']}) "
-                      f"status={d['status']} health={d['health']}")
-            print()
+            if msg["type"] != "state":
+                continue
+            states += 1
+            hud = msg["hud"]
+            print(
+                f"state t={msg['t']}: {hud['status']}, {hud['activeDrones']} drones airborne, "
+                f"{hud['activeAircraft']} aircraft ({msg['airTraffic']['status']}), "
+                f"{hud['predictedConflicts']} open conflicts, risk {hud['riskLevel']}"
+            )
 
 
-def test_zones():
-    print("=== POST /zones Test ===\n")
-    data = json.dumps({"lat": 12.97, "lon": 77.59, "radius": 500}).encode()
-    req = urllib.request.Request(
-        "http://localhost:8000/zones",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    resp = json.loads(urllib.request.urlopen(req).read())
-    print(f"Response: {json.dumps(resp, indent=2)}\n")
-
-    print("=== GET /zones Test ===\n")
-    resp = json.loads(urllib.request.urlopen("http://localhost:8000/zones").read())
-    print(f"Response: {json.dumps(resp, indent=2)}\n")
-
-
-def test_emergency():
-    print("=== POST /emergency Test ===\n")
-    # Place emergency zone right on drone-1's path
-    data = json.dumps({"lat": 12.978, "lon": 77.590, "radius": 300}).encode()
-    req = urllib.request.Request(
-        "http://localhost:8000/emergency",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    resp = json.loads(urllib.request.urlopen(req).read())
-    print(f"Response: {json.dumps(resp, indent=2)}\n")
+def exercise_rest() -> None:
+    world = call("GET", "/world")
+    print(f"world: {len(world['restricted'])} restricted areas, {len(world['ports'])} drone ports")
+    added = call("POST", "/drones", {"mode": "auto"})
+    print(f"added {added['drone']['id']}: {added['drone']['mission']} (predicted conflicts: {added['predictedConflicts']})")
+    nfz = call("POST", "/zones", {"lat": DOWNTOWN[0], "lon": DOWNTOWN[1]})
+    print(f"no-fly {nfz['zone']['id']}: inside {nfz['inside']}, rerouting {nfz['approaching']}")
+    ez = call("POST", "/emergency", {"lat": DOWNTOWN[0] + 0.03, "lon": DOWNTOWN[1] - 0.03, "radius": 700})
+    print(f"emergency {ez['zone']['id']}: escaping {ez['inside']}, rerouting {ez['approaching']}")
+    for zone in (nfz, ez):
+        call("DELETE", f"/zones/{zone['zone']['id']}")
+    events = call("GET", "/events?limit=20")["events"]
+    print("latest events:")
+    for e in events[-8:]:
+        print(f"  {e['type']:<26} {e['message'][:110]}")
+    print(call("POST", "/reset"))
 
 
 if __name__ == "__main__":
-    asyncio.run(test_websocket())
-    test_zones()
-    test_emergency()
-    print("All tests passed!")
+    asyncio.run(watch_ws())
+    exercise_rest()

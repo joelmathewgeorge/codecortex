@@ -1,118 +1,102 @@
 """
-No-fly zones and emergency zones — storage and conflict detection.
+Zones drawn during the demo: operator no-fly rings and emergency zones.
 
-ARCHITECTURE NOTE:
-    Zones are stored in a plain Python list (in-memory).
-    This means they vanish when the server restarts. That's intentional
-    for a prototype — no database setup, no migration headaches.
-    If this ever needs persistence, swap the list for a DB table.
+Both are circles with a hard core and a soft buffer. An emergency is the serious one: its
+buffer costs 500 per metre, drones already inside escape by the cheapest way out, and the
+event log and HUD escalate. The predetermined real-world restrictions live in world.py.
 """
 
 from __future__ import annotations
 
-import time
-import uuid
-from dataclasses import dataclass, field
+import itertools
+import math
+from dataclasses import dataclass
 
-from geo_utils import haversine
+from config import (
+    COST_EMERGENCY_BUFFER,
+    COST_NEAR_RESTRICTED,
+    EMERGENCY_BUFFER_M,
+    MAX_EMERGENCY_ZONES,
+    MAX_OPERATOR_ZONES,
+    OPERATOR_ZONE_BUFFER_M,
+)
+from geo_utils import LocalFrame
 
-
-# ---------------------------------------------------------------------------
-# Zone data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Zone:
-    """
-    A circular geographic zone (no-fly or emergency).
-
-    WHY A DATACLASS?
-        It's a simple struct with named fields.  A dict would work, but
-        dataclasses give you type hints, a free __repr__, and IDE
-        autocomplete — much less error-prone when you're moving fast.
-
-    Fields:
-        lat, lon   — center of the zone (degrees)
-        radius     — radius in metres
-        emergency  — True for emergency/danger zones
-        id         — auto-generated unique identifier
-        created_at — Unix timestamp (for TTL / expiry later)
-    """
+    id: str
+    kind: str  # operator | emergency
     lat: float
     lon: float
+    x: float
+    y: float
     radius: float
-    emergency: bool = False
-    id: str = field(default_factory=lambda: f"zone-{uuid.uuid4().hex[:8]}")
-    created_at: float = field(default_factory=time.time)
+    buffer: float
+    buffer_cost: float
+    created_at: float
+    label: str
+
+    def distance(self, x: float, y: float) -> float:
+        """Metres from the edge of the hard core; negative inside."""
+        return math.hypot(x - self.x, y - self.y) - self.radius
+
+    def contains(self, x: float, y: float, margin: float = 0.0) -> bool:
+        return self.distance(x, y) < margin
 
     def to_dict(self) -> dict:
-        """Convert to JSON-friendly dict for API responses."""
         return {
             "id": self.id,
-            "lat": self.lat,
-            "lon": self.lon,
+            "kind": self.kind,
+            "lat": round(self.lat, 6),
+            "lon": round(self.lon, 6),
             "radius": self.radius,
-            "emergency": self.emergency,
-            "created_at": self.created_at,
+            "buffer": self.buffer,
+            "label": self.label,
+            "createdAt": round(self.created_at, 1),
         }
 
 
-# ---------------------------------------------------------------------------
-# In-memory zone storage
-# ---------------------------------------------------------------------------
+class ZoneStore:
+    def __init__(self, frame: LocalFrame) -> None:
+        self.frame = frame
+        self.zones: list[Zone] = []
+        self._ids = itertools.count(1)
 
-# This is the "database" — a global list.
-# All parts of the app import and mutate this list directly.
-_zones: list[Zone] = []
-MAX_OPERATOR_ZONES = 4
+    def add(self, kind: str, lat: float, lon: float, radius: float, now: float) -> tuple[Zone, list[Zone]]:
+        """Returns the new zone and any zones it pushed out (oldest first when over the cap)."""
+        emergency = kind == "emergency"
+        cap = MAX_EMERGENCY_ZONES if emergency else MAX_OPERATOR_ZONES
+        same = [z for z in self.zones if z.kind == kind]
+        dropped = same[: max(0, len(same) - cap + 1)]
+        self.zones = [z for z in self.zones if z not in dropped]
+        n = next(self._ids)
+        x, y = self.frame.point(lat, lon)
+        zone = Zone(
+            id=f"{'EZ' if emergency else 'NFZ'}-{n}",
+            kind=kind,
+            lat=lat,
+            lon=lon,
+            x=x,
+            y=y,
+            radius=radius,
+            buffer=EMERGENCY_BUFFER_M if emergency else OPERATOR_ZONE_BUFFER_M,
+            buffer_cost=COST_EMERGENCY_BUFFER if emergency else COST_NEAR_RESTRICTED,
+            created_at=now,
+            label=f"Emergency {n}" if emergency else f"No-fly {n}",
+        )
+        self.zones.append(zone)
+        return zone, dropped
 
+    def remove(self, zone_id: str) -> Zone | None:
+        for z in self.zones:
+            if z.id == zone_id:
+                self.zones.remove(z)
+                return z
+        return None
 
-def add_zone(lat: float, lon: float, radius: float,
-             emergency: bool = False) -> Zone:
-    """Create a zone. Emergencies replace previous emergencies so circles do not stack."""
-    if emergency:
-        _zones[:] = [z for z in _zones if not z.emergency]
-    else:
-        operator_idxs = [i for i, z in enumerate(_zones) if not z.emergency]
-        if len(operator_idxs) >= MAX_OPERATOR_ZONES:
-            _zones.pop(operator_idxs[0])
-    zone = Zone(lat=lat, lon=lon, radius=radius, emergency=emergency)
-    _zones.append(zone)
-    return zone
+    def clear(self) -> None:
+        self.zones.clear()
 
-
-def get_all_zones() -> list[Zone]:
-    """Return all active zones."""
-    return list(_zones)
-
-
-def clear_zones() -> None:
-    """Remove all zones (useful for testing)."""
-    _zones.clear()
-
-
-# ---------------------------------------------------------------------------
-# Conflict detection
-# ---------------------------------------------------------------------------
-
-def check_conflicts(lat: float, lon: float) -> list[Zone]:
-    """
-    Check if a point (lat, lon) is inside any active zone.
-
-    HOW IT WORKS:
-        For each zone, compute the Haversine distance from the zone's
-        center to the given point.  If distance < zone.radius, the
-        point is inside the zone → conflict!
-
-    WHY RETURN A LIST?
-        A drone might be inside multiple overlapping zones.  We return
-        all of them so the reroute logic can handle each one.
-
-    Returns: list of Zone objects that the point conflicts with
-    """
-    conflicts = []
-    for zone in _zones:
-        dist = haversine(zone.lat, zone.lon, lat, lon)
-        if dist < zone.radius:
-            conflicts.append(zone)
-    return conflicts
+    def of_kind(self, kind: str) -> list[Zone]:
+        return [z for z in self.zones if z.kind == kind]

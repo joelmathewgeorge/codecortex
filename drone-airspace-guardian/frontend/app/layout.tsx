@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Outfit } from "next/font/google";
+import AirspaceProvider from "@/components/AirspaceProvider";
+import TopBar from "@/components/TopBar";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -10,12 +12,12 @@ const outfit = Outfit({
 const ibm = IBM_Plex_Mono({
   variable: "--font-ibm",
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
-  title: "Dubai airspace — CodeCortex",
-  description: "Downtown Dubai drone watch with YOLOv8n camera and ML health.",
+  title: { default: "Airspace Guardian", template: "%s | Airspace Guardian" },
+  description: "Dubai drone operations: weighted A* routing, 4-D conflict prediction and emergency escape over real restricted airspace.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -24,7 +26,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <head>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
       </head>
-      <body>{children}</body>
+      <body>
+        <AirspaceProvider>
+          <div className="app">
+            <TopBar />
+            {children}
+          </div>
+        </AirspaceProvider>
+      </body>
     </html>
   );
 }

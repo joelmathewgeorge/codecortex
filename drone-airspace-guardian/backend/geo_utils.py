@@ -1,95 +1,44 @@
 """
-Geospatial utility functions.
+Local flat-earth frame for the Dubai operating box.
 
-WHY THIS FILE EXISTS:
-    Latitude/longitude coordinates live on a sphere (the Earth).
-    You can't just do sqrt((x2-x1)^2 + (y2-y1)^2) — that's Euclidean
-    distance and it gives wildly wrong answers for points far apart.
-
-    The Haversine formula computes the great-circle distance between
-    two points on a sphere. It's the standard tool for this.
+Everything in the planner works in metres (x east, y north) around the box centre and only
+converts to latitude/longitude at the edges: loading world data and writing the wire format.
 """
 
 import math
 
-# Earth's radius in metres — we work in metres everywhere
-EARTH_RADIUS_M = 6_371_000
+import numpy as np
 
 
-def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+class LocalFrame:
     """
-    Distance in metres between two lat/lon points using the Haversine formula.
+    Equirectangular metres around a reference point.
 
-    How it works (conceptually):
-        1. Convert degrees → radians  (trig functions need radians)
-        2. Compute the "haversine" of the central angle:
-           a = sin²(Δlat/2) + cos(lat1) * cos(lat2) * sin²(Δlon/2)
-        3. Central angle c = 2 * atan2(√a, √(1-a))
-        4. Distance = Earth's radius * c
-
-    Returns: distance in metres (float)
+    Accurate to ~0.1% across the 30 km Dubai box, far below the 150 m planning grid, and it
+    keeps distance and heading maths as plain vectors. Accepts floats or numpy arrays.
     """
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
 
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    def __init__(self, lat0: float, lon0: float) -> None:
+        self.lat0 = lat0
+        self.lon0 = lon0
+        self.m_per_deg_lat = 110_574.0
+        self.m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat0))
 
-    return EARTH_RADIUS_M * c
+    def to_xy(self, lat, lon):
+        return (np.asarray(lon) - self.lon0) * self.m_per_deg_lon, (np.asarray(lat) - self.lat0) * self.m_per_deg_lat
 
+    def to_latlon(self, x, y):
+        return self.lat0 + np.asarray(y) / self.m_per_deg_lat, self.lon0 + np.asarray(x) / self.m_per_deg_lon
 
-def bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Compute the initial bearing (forward azimuth) from point 1 to point 2.
+    def point(self, lat: float, lon: float) -> tuple[float, float]:
+        x, y = self.to_xy(lat, lon)
+        return float(x), float(y)
 
-    WHY WE NEED THIS:
-        When rerouting a drone around a zone, we need to know the
-        direction from the zone center to the drone's waypoint, then
-        push the waypoint perpendicular to that direction (i.e., to the
-        "side" of the zone).
-
-    Returns: bearing in degrees (0-360, where 0=North, 90=East)
-    """
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlon = lon2 - lon1
-
-    x = math.sin(dlon) * math.cos(lat2)
-    y = (math.cos(lat1) * math.sin(lat2)
-         - math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
-
-    initial_bearing = math.atan2(x, y)
-    # atan2 returns -π to π, convert to 0-360 degrees
-    return (math.degrees(initial_bearing) + 360) % 360
+    def latlon(self, x: float, y: float) -> tuple[float, float]:
+        lat, lon = self.to_latlon(x, y)
+        return float(lat), float(lon)
 
 
-def offset_point(lat: float, lon: float, bearing_deg: float,
-                 distance_m: float) -> tuple[float, float]:
-    """
-    Given a starting point and a bearing, compute a new point at the
-    given distance along that bearing.
-
-    This is the inverse of haversine — instead of "how far apart are
-    these points?", it's "if I walk X metres in direction Y, where do
-    I end up?"
-
-    Used by the reroute logic to push a waypoint to the side of a zone.
-
-    Returns: (new_lat, new_lon) in degrees
-    """
-    lat_r = math.radians(lat)
-    lon_r = math.radians(lon)
-    brng_r = math.radians(bearing_deg)
-    d = distance_m / EARTH_RADIUS_M  # angular distance
-
-    new_lat = math.asin(
-        math.sin(lat_r) * math.cos(d)
-        + math.cos(lat_r) * math.sin(d) * math.cos(brng_r)
-    )
-    new_lon = lon_r + math.atan2(
-        math.sin(brng_r) * math.sin(d) * math.cos(lat_r),
-        math.cos(d) - math.sin(lat_r) * math.sin(new_lat)
-    )
-
-    return math.degrees(new_lat), math.degrees(new_lon)
+def heading_of(dx: float, dy: float) -> float:
+    """Compass heading in degrees for a local-frame displacement."""
+    return (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0

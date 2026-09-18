@@ -1,2 +1,0 @@
-# codecortex
-Codecortex hackathon 
