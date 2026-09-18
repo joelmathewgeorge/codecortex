@@ -33,8 +33,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from drones import Drone, create_default_drones
-from zones import add_zone, get_all_zones
+from pathlib import Path
+
+from fastapi.staticfiles import StaticFiles
+
+from drones import Drone, create_default_drones, mark_proximity, reset_fleet
+from health_bridge import reset_monitors, warmup as warmup_ml
+from vision_bridge import current_vision, snapshot_vision, warmup_vision
+from zones import add_zone, clear_zones, get_all_zones
 
 # ---------------------------------------------------------------------------
 # FastAPI app setup
@@ -69,6 +75,23 @@ drones: list[Drone] = create_default_drones()
 
 # All connected WebSocket clients — we broadcast to everyone
 connected_clients: set[WebSocket] = set()
+_vision: dict = current_vision()
+_tick = 0
+MEDIA_DIR = Path(__file__).resolve().parent.parent / "ml" / "vision_frames"
+
+
+def _positions_payload(**extra) -> dict:
+    """Live map + camera snapshot. Extra keys (reset, type, timestamp) stay optional."""
+    payload = {
+        "type": "positions",
+        "drones": [d.to_dict() for d in drones],
+        "zones": [z.to_dict() for z in get_all_zones()],
+        "vision": _vision,
+        "city": "dubai",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    payload.update(extra)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -131,22 +154,16 @@ async def simulation_loop() -> None:
         to the event loop so FastAPI can handle HTTP requests (like
         POST /zones) between ticks.
     """
+    global _tick, _vision
     while True:
-        # 1. Tick all drones
         for drone in drones:
             drone.tick()
+        mark_proximity(drones)
+        _tick += 1
+        if _tick % 3 == 0:
+            _vision = await asyncio.to_thread(snapshot_vision)
 
-        # 2. Build the WebSocket message
-        message = {
-            "type": "positions",
-            "drones": [d.to_dict() for d in drones],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        # 3. Broadcast to all connected clients
-        await broadcast(message)
-
-        # 4. Wait ~1 second before next tick
+        await broadcast(_positions_payload())
         await asyncio.sleep(1)
 
 
@@ -165,6 +182,10 @@ async def startup():
         server. create_task() schedules it on the event loop without
         blocking the server from handling requests.
     """
+    global _vision
+    warmup_ml()
+    warmup_vision()
+    _vision = current_vision()
     asyncio.create_task(simulation_loop())
 
 
@@ -188,6 +209,7 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
     connected_clients.add(websocket)
+    await websocket.send_text(json.dumps(_positions_payload()))
 
     try:
         # Keep the connection alive by reading (even though we don't use the data)
@@ -251,6 +273,12 @@ async def create_emergency(body: ZoneCreate):
         "type": "alert",
         "zone": zone.to_dict(),
         "affected_drones": affected,
+        "message": (
+            f"Airspace conflict — rerouting {len(affected)} drone(s)"
+            if affected
+            else "Emergency zone created — no drones in radius"
+        ),
+        "severity": "high",
     }
     await broadcast(alert)
 
@@ -265,12 +293,36 @@ async def create_emergency(body: ZoneCreate):
 # Health check endpoint (bonus — useful for monitoring)
 # ---------------------------------------------------------------------------
 
+@app.post("/reset")
+async def reset_demo():
+    """Clear zones, restore the five Dubai missions, and broadcast a clean snapshot."""
+    clear_zones()
+    reset_monitors()
+    reset_fleet(drones)
+    payload = _positions_payload(reset=True)
+    await broadcast(payload)
+    return {"status": "reset", "drones": len(drones), "zones": 0}
+
+
+@app.get("/state")
+async def get_state():
+    payload = _positions_payload()
+    payload.pop("type", None)
+    payload.pop("timestamp", None)
+    return payload
+
+
 @app.get("/")
 async def root():
     """Simple health check — confirms the server is running."""
     return {
         "service": "Drone Airspace Guardian",
         "status": "running",
+        "city": "dubai",
         "drones": len(drones),
         "zones": len(get_all_zones()),
     }
+
+
+if MEDIA_DIR.exists():
+    app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")

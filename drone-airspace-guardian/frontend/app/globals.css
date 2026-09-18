@@ -1,49 +1,963 @@
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-html {
-  height: 100%;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 html,
 body {
-  max-width: 100vw;
-  overflow-x: hidden;
+  height: 100%;
+  margin: 0;
+  background: #05080f;
+  color: #f3e6c4;
 }
 
-body {
-  min-height: 100%;
+button {
+  font-family: inherit;
+}
+
+.dag-shell {
+  --sand: #e0b84a;
+  --cream: #fff6dc;
+  --ink: #05080f;
+  --panel: #0b1220;
+  --line: rgba(224, 184, 74, 0.28);
+  --muted: #c9c0a6;
+  --teal: #1ad1c4;
+  --alert: #ff6b7a;
+  --reroute: #ffcf5c;
   display: flex;
   flex-direction: column;
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  height: 100vh;
+  overflow: hidden;
+  font-family: var(--font-outfit), "Segoe UI", sans-serif;
+  background:
+    radial-gradient(1200px 480px at 78% -10%, rgba(224, 184, 74, 0.08), transparent 55%),
+    linear-gradient(180deg, #08111c 0%, #05080f 42%, #04060c 100%);
 }
 
-* {
-  box-sizing: border-box;
-  padding: 0;
+/* —— Header strip (in flow, not over the map) —— */
+
+.dag-top {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dag-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dag-mark {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  background: var(--sand);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  box-shadow: 0 0 16px rgba(224, 184, 74, 0.55);
+}
+
+.dag-top h1 {
+  font-size: 22px;
+  letter-spacing: -0.04em;
   margin: 0;
+  color: var(--cream);
+  font-weight: 650;
+  line-height: 1.1;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+.lede {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 52ch;
+  line-height: 1.4;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
+.dag-readout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 52px;
+  padding: 2px 10px 2px 0;
+  border-right: 1px solid rgba(255, 246, 220, 0.08);
+}
+
+.stat b {
+  font-size: 22px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--cream);
+}
+
+.stat i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.stat.is-hot b {
+  color: var(--alert);
+}
+
+.feed {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #121826;
+  border: 1px solid #2a3348;
+  color: var(--cream);
+}
+
+.feed i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6f7890;
+}
+
+.feed.is-live {
+  background: #12352d;
+  border-color: var(--teal);
+  color: #9ff3ea;
+}
+
+.feed.is-live i {
+  background: var(--teal);
+  box-shadow: 0 0 8px var(--teal);
+}
+
+.feed.is-connecting {
+  background: #3a3014;
+  border-color: var(--sand);
+}
+
+.feed.is-connecting i {
+  background: var(--sand);
+}
+
+.feed.is-disconnected {
+  background: #3a1520;
+  border-color: var(--alert);
+  color: #ffd0d6;
+}
+
+.feed.is-disconnected i {
+  background: var(--alert);
+}
+
+.feed.is-simulation i {
+  background: #9fb4ff;
+}
+
+/* —— Three-column console —— */
+
+.dag-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr) 332px;
+  gap: 12px;
+  padding: 12px 16px 16px;
+}
+
+.dag-panel,
+.dag-vision,
+.dag-stage {
+  min-height: 0;
+  background: rgba(11, 18, 32, 0.92);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+
+.dag-panel,
+.dag-vision {
+  position: relative;
+  z-index: 1;
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.dag-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dag-panel h2,
+.dag-vision h2,
+.dag-stage-bar h2 {
+  font-size: 13px;
+  margin: 0;
+  color: var(--sand);
+  font-weight: 600;
+}
+
+.dag-panel-head .count {
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dag-panel-head .count.is-live {
+  color: var(--teal);
+}
+
+.dag-panel ul {
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+}
+
+.dag-panel li {
+  list-style: none;
+  padding: 8px 0 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dag-panel .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.dag-panel .status.is-rerouting {
+  color: var(--reroute);
+}
+
+.dag-panel .status.is-landing {
+  color: var(--alert);
+}
+
+.dag-panel .mission {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 2px 0 6px;
+}
+
+.dag-panel .health {
+  font-size: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.dag-panel .health .bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 246, 220, 0.12);
+  overflow: hidden;
+}
+
+.dag-panel .health .bar > span {
+  display: block;
+  height: 100%;
+}
+
+.dag-panel .health .value {
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  min-width: 2ch;
+}
+
+.dag-panel .telemetry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-ibm), ui-monospace, monospace;
+}
+
+.dag-panel .behavior {
+  color: var(--cream);
+}
+
+.dag-panel .track {
+  color: #9fb4ff;
+}
+
+.dag-panel .provenance,
+.dag-panel .empty {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dag-panel li.is-affected {
+  box-shadow: inset 3px 0 0 var(--alert);
+  padding-left: 8px;
+}
+
+/* —— Map stage (the map lives only inside this chrome) —— */
+
+.dag-stage {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(224, 184, 74, 0.08),
+    0 18px 40px rgba(0, 0, 0, 0.35);
+}
+
+.dag-stage-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(5, 8, 15, 0.55);
+}
+
+.dag-stage-bar h2 {
+  font-size: 14px;
+  color: var(--cream);
+}
+
+.kicker {
+  margin: 0;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--sand);
+  font-family: var(--font-ibm), ui-monospace, monospace;
+}
+
+.dag-map-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #071018;
+  overflow: hidden;
+}
+
+.dag-map {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  width: 100%;
+  background: #071018;
+  filter: saturate(0.92) contrast(1.08);
+}
+
+.dag-map .leaflet-container {
+  height: 100%;
+  width: 100%;
+  background: #071018;
+  font-family: inherit;
+}
+
+.dag-map.is-drawing {
+  cursor: crosshair;
+}
+
+.dag-map .leaflet-control-zoom a {
+  background: rgba(11, 18, 32, 0.92);
+  color: var(--cream);
+  border-color: var(--line);
+}
+
+.dag-map .leaflet-control-attribution {
+  background: rgba(5, 8, 15, 0.72);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* Trajectories / zones: extra punch over sunlit Esri tiles */
+.leaflet-overlay-pane .dag-route,
+.leaflet-overlay-pane .dag-reroute {
+  filter: drop-shadow(0 0 1px #fff6dc);
+}
+
+.leaflet-overlay-pane .dag-reroute {
+  filter: drop-shadow(0 0 2px #ffcf5c);
+}
+
+.leaflet-pane.zones .dag-zone {
+  filter: drop-shadow(0 0 2px #e0b84a);
+}
+
+.leaflet-pane.zones .dag-zone.is-emergency {
+  filter: drop-shadow(0 0 3px #ff6b7a);
+}
+
+.leaflet-pane.zones .dag-zone-pulse {
+  animation: dag-pulse 1.8s ease-out infinite;
+}
+
+@keyframes dag-pulse {
+  0% {
+    opacity: 0.85;
+    stroke-width: 2;
+  }
+  100% {
+    opacity: 0;
+    stroke-width: 10;
+  }
+}
+
+.dag-hint {
+  position: absolute;
+  z-index: 800;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: rgba(7, 10, 18, 0.9);
+  border: 1px solid var(--sand);
+  color: var(--cream);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.dag-hint.is-on {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dag-legend {
+  position: static;
+  z-index: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  font-size: 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  background: rgba(5, 8, 15, 0.72);
+}
+
+.dag-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+
+.dag-legend .g {
+  background: var(--teal);
+}
+
+.dag-legend .y {
+  background: var(--sand);
+}
+
+.dag-legend .r {
+  background: var(--alert);
+}
+
+.dag-legend .line {
+  width: 16px;
+  height: 0;
+  border-radius: 0;
+  border-top: 3px dashed var(--reroute);
+  background: none;
+  vertical-align: 3px;
+}
+
+.dag-legend .ring {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+  border: 2px solid var(--sand);
+}
+
+.dag-legend .ring.emergency {
+  border-color: var(--alert);
+  border-style: solid;
+}
+
+.dag-legend .ring.nofly {
+  border-style: dashed;
+}
+
+/* —— Controls in the stage bar —— */
+
+.dag-controls {
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dag-controls button {
+  min-height: 40px;
+  padding: 8px 14px;
+  font-weight: 650;
+  border-radius: 4px;
+  color: var(--cream);
+  cursor: pointer;
+  background: rgba(18, 24, 38, 0.95);
+  border: 1px solid var(--line);
+}
+
+.dag-controls button:focus-visible {
+  outline: 3px solid var(--sand);
+  outline-offset: 2px;
+}
+
+.dag-controls button.is-on {
+  background: #1d3a36;
+  border-color: var(--teal);
+  color: #9ff3ea;
+}
+
+.dag-controls .ghost {
+  color: var(--muted);
+}
+
+.dag-controls .emergency {
+  background: #9b1730;
+  border-color: var(--alert);
+  color: #fff;
+}
+
+.dag-controls .emergency:disabled,
+.dag-controls .ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* —— Conflict banner sits on the map frame —— */
+
+.dag-banner {
+  position: absolute;
+  z-index: 900;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  display: none;
+  align-items: center;
+  gap: 10px;
+  background: #8d1a2c;
+  color: #fff;
+  font-weight: 650;
+  padding: 10px 16px;
+  border-radius: 6px;
+  max-width: min(560px, calc(100% - 24px));
+  box-shadow: 0 8px 24px rgba(141, 26, 44, 0.45);
+}
+
+.dag-banner.is-on {
+  display: flex;
+}
+
+.dag-banner .pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffd0d6;
+  box-shadow: 0 0 8px #fff;
+  animation: dag-pip 1.1s ease-in-out infinite;
+}
+
+.dag-banner .text {
+  line-height: 1.3;
+}
+
+@keyframes dag-pip {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.dag-error {
+  position: absolute;
+  z-index: 1100;
+  right: 18px;
+  bottom: 18px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.dag-error button {
+  background: transparent;
+  border: 0;
+  color: var(--sand);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+/* —— Camera / YOLO —— */
+
+.dag-vision .frame {
+  position: relative;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 4 / 3;
+  border: 1px solid rgba(224, 184, 74, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.dag-vision .frame.is-empty {
+  min-height: 140px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #0a1018 0 10px,
+      #0d1520 10px 20px
+    );
+}
+
+.dag-vision img,
+.dag-vision svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.dag-vision img {
+  object-fit: cover;
+}
+
+.dag-vision svg {
+  pointer-events: none;
+}
+
+.dag-vision .truth {
+  fill: none;
+  stroke: #fff6dc;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  opacity: 0.45;
+}
+
+.dag-vision .box {
+  fill: none;
+  stroke-width: 5;
+  paint-order: stroke;
+  filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 6px currentColor);
+}
+
+.dag-vision .chip {
+  stroke: none;
+  fill-opacity: 0.95;
+}
+
+.dag-vision text {
+  fill: #05080f;
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  font-weight: 700;
+  paint-order: stroke fill;
+  stroke: transparent;
+}
+
+.dag-vision .muted {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dag-vision .frame-note {
+  position: absolute;
+  inset: auto 8px 8px;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: rgba(5, 8, 15, 0.82);
+  color: var(--cream);
+}
+
+.dag-vision .truth-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  pointer-events: auto;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 246, 220, 0.35);
+  background: rgba(5, 8, 15, 0.72);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.dag-vision .truth-toggle.is-on {
+  color: var(--cream);
+  border-color: var(--sand);
+}
+
+.dag-vision .tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.dag-vision .tally li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dag-vision .tally i,
+.dag-vision .detections i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dag-vision .tally b {
+  font-family: var(--font-ibm), ui-monospace, monospace;
+}
+
+.dag-vision .detections {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+}
+
+.dag-vision .detections li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dag-vision .detections .name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dag-vision .detections .conf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  color: var(--muted);
+}
+
+.dag-vision .detections .bar {
+  width: 52px;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 246, 220, 0.12);
+  overflow: hidden;
+}
+
+.dag-vision .detections .bar > span {
+  display: block;
+  height: 100%;
+}
+
+.dag-vision .detections .more {
+  border: 0;
+  color: var(--muted);
+  justify-content: flex-start;
+}
+
+.dag-vision .model-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dag-vision .model-meta dt {
+  font-size: 10px;
+  color: #8d866f;
+}
+
+.dag-vision .model-meta dd {
+  margin: 0;
+  color: var(--cream);
+  font-family: var(--font-ibm), ui-monospace, monospace;
+}
+
+.dag-vision .frame-id {
+  margin: 8px 0 0;
+  font-size: 10px;
+  color: #8d866f;
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— Craft markers —— */
+
+.dag-icon {
+  background: none !important;
+  border: none !important;
+}
+
+.dag-craft {
+  width: 44px;
+  height: 44px;
+  position: relative;
+  transform: rotate(var(--h));
+  filter: drop-shadow(0 0 6px rgba(26, 209, 196, 0.45));
+}
+
+.dag-craft .halo {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
+  opacity: 0.7;
+}
+
+.dag-craft .body {
+  position: absolute;
+  left: 17px;
+  top: 14px;
+  width: 10px;
+  height: 16px;
+  background: var(--c);
+  clip-path: polygon(50% 0, 100% 38%, 70% 100%, 30% 100%, 0 38%);
+}
+
+.dag-craft .rotor {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--c);
+  border-radius: 50%;
+  opacity: 0.9;
+}
+
+.dag-craft .r1 {
+  left: 4px;
+  top: 6px;
+}
+
+.dag-craft .r2 {
+  right: 4px;
+  top: 6px;
+}
+
+.dag-craft .r3 {
+  left: 4px;
+  bottom: 6px;
+}
+
+.dag-craft .r4 {
+  right: 4px;
+  bottom: 6px;
+}
+
+.dag-craft b {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translateX(-50%) rotate(calc(var(--h) * -1));
+  font-size: 9px;
+  font-family: var(--font-ibm), ui-monospace, monospace;
+  color: var(--cream);
+  background: rgba(5, 8, 15, 0.85);
+  padding: 0 3px;
+  border: 1px solid rgba(255, 246, 220, 0.18);
+}
+
+.dag-craft.is-affected {
+  filter: drop-shadow(0 0 8px var(--alert));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dag-banner .pip,
+  .dag-craft.is-affected,
+  .leaflet-pane.zones .dag-zone-pulse {
+    animation: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .dag-body {
+    grid-template-columns: 240px minmax(0, 1fr) 280px;
+  }
+
+  .lede {
+    max-width: 36ch;
+  }
+}
+
+@media (max-width: 980px) {
+  .dag-shell {
+    overflow: auto;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .dag-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dag-body {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+  }
+
+  .dag-stage {
+    min-height: 62vh;
+    order: -1;
+  }
+
+  .dag-map-frame {
+    min-height: 52vh;
+  }
+
+  .dag-panel,
+  .dag-vision {
+    max-height: 40vh;
   }
 }

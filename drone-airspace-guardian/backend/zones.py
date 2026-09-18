@@ -64,11 +64,18 @@ class Zone:
 # This is the "database" — a global list.
 # All parts of the app import and mutate this list directly.
 _zones: list[Zone] = []
+MAX_OPERATOR_ZONES = 4
 
 
 def add_zone(lat: float, lon: float, radius: float,
              emergency: bool = False) -> Zone:
-    """Create a zone and add it to the store. Returns the new Zone."""
+    """Create a zone. Emergencies replace previous emergencies so circles do not stack."""
+    if emergency:
+        _zones[:] = [z for z in _zones if not z.emergency]
+    else:
+        operator_idxs = [i for i, z in enumerate(_zones) if not z.emergency]
+        if len(operator_idxs) >= MAX_OPERATOR_ZONES:
+            _zones.pop(operator_idxs[0])
     zone = Zone(lat=lat, lon=lon, radius=radius, emergency=emergency)
     _zones.append(zone)
     return zone
