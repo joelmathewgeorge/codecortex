@@ -1,274 +1,268 @@
-# Drone Airspace Guardian — working context
+# Drone Airspace Guardian — restore context (v2)
 
-Snapshot of the repo as of 18 Sep 2026. This file is a handoff, not a spec. Prefer the code when they disagree.
+Handoff for a new agent. Snapshot of the running stack as of 18 Sep 2026, after the hybrid planner console. Prefer the code if this file and the chat disagree. Do not treat `ml/PROMPT.md` or `ml/EXTENSION_PROMPT.md` as the live architecture; they predate this build.
+
+Public pitch: repo-root [`README.md`](../README.md). Runbook: [`README.md`](README.md). Ownership: [`.github/CODEOWNERS`](../.github/CODEOWNERS).
 
 ---
 
 ## 1. Pitch
 
-A live **Beyond Visual Line of Sight (BVLOS)** airspace console for a Downtown Dubai delivery corridor.
+A same-laptop **BVLOS operator console** for Downtown Dubai delivery airspace. Eight simulated drones fly port-to-destination missions over **real OpenStreetMap restricted polygons** (airports, runway-approach funnels, military sites, Zabeel Palace, stadia, Meydan, power plants). An operator adds traffic, draws no-fly rings, and places emergency zones. Weighted A* detours, 4-D deconfliction yields, and an emergency escape planner flies the cheapest safe exit then rejoins the original route.
 
-Five simulated drones fly named missions over Burj Khalifa / Downtown (25.1972 N, 55.2744 E). An operator draws no-fly rings, declares an inbound helicopter, and watches the fleet detect the conflict, detour, and raise a banner — without touching a joystick.
+There is no database, no auth, no radio link, and no physical UAV. Next.js on **:3000**, FastAPI on **:8000**. FastAPI describes itself as *hybrid adaptive airspace planning* (`main.py` version `0.2.0`).
 
-Health scores come from a trained remaining-useful-life (RUL) model, not random jitter. A camera dock cycles aerial frames through a VisDrone-fine-tuned YOLOv8n (`yolov8n-airspace`) so the same HUD can show ground activity under the corridor.
-
-This is a same-laptop hackathon demo (CodeCortex). There is no auth, no database, no real radio link. The project README is a Dubai runbook. A few FastAPI docstring examples and `backend/test_server.py` still post Bangalore coordinates (12.97, 77.59).
+The HUD answers: who is where, what is blocked, what will collide, and what the planner just did.
 
 ---
 
 ## 2. Architecture
 
-Four cooperating pieces, all in-process or on localhost:
-
 ```
-Next.js dashboard (Leaflet map + HUD)
-        |  REST: POST /zones, /emergency, /reset
-        |  WS:   /ws  (positions + zones + vision + alerts)
+Next.js Console `/` + Event log `/events`   (:3000)
+        |  REST  POST /drones /zones /emergency /sim /reset, DELETE /zones/{id}
+        |  WS    /ws  hello (history) -> state ~1 Hz -> events bursts
         v
-FastAPI simulation (in-memory drones + zones)
-        |-- health_bridge  ->  ml/predict.py  (C-MAPSS HistGradientBoosting)
-        |-- vision_bridge  ->  YOLOv8n on ml/vision_frames/
-        |-- missions.py    ->  ml/trajectories.json  (dense_waypoints, Dubai-fitted)
-        +-- drones.py      ->  tick, proximity, geometric reroute
+FastAPI Simulation (in-memory, process-global)               (:8000)
+        |-- sim.py            tick, fleet, replan queue, HUD
+        |-- planner.py        epsilon-weighted A* + string-pull
+        |-- emergency.py      escape + rejoin original (or divert to port)
+        |-- risk_map.py       150 m Dynamic Risk Map
+        |-- conflicts.py      4-D prediction + tactical manoeuvres
+        |-- zones.py          operator NFZ + emergency rings
+        |-- world.py          OSM dubai_airspace.json
+        |-- aircraft.py       OpenSky live | replay | scheduled helis
+        |-- ground.py         six road cameras
+        |-- vision_bridge.py  YOLOv8n (VisDrone fine-tune)
+        |-- health_bridge.py  C-MAPSS RUL via ml/predict.py
+        +-- drones.py         battery energy model (separate from health)
 ```
 
-**Frontend.** Next.js 16 / React 19 App Router. Leaflet (not Mapbox) with Esri World Imagery, a faint CARTO dark label layer, and four local Dubai aerial plates. The map is encased in dashboard chrome — not full-bleed — via `globals.css` (`dag-body`, `dag-stage`, `dag-map-frame`) around the three-pane shell (fleet | map | camera). Default data mode is **live** WebSocket; `NEXT_PUBLIC_DATA_MODE=mock` falls back to `lib/fake-simulator.ts`. Marker motion is interpolated on the map (~1 s) so a 1 Hz backend tick does not teleport. The old `posDbg` debug ingest is gone from `useDroneFeed`. Dev URL is **http://localhost:3000**.
+**Frontend.** Next.js 16.3 / React 19 App Router. `app/layout.tsx` wraps everything in `AirspaceProvider` + `TopBar` (Console | Event log tabs, sim clock, **1x / 2x / 4x**, OpenSky live/replay chip, Live/Offline). `app/page.tsx` mounts `Console`. Leaflet map: Esri World Imagery + CARTO labels (`AirspaceMap`). Types in `frontend/types/airspace.ts`. Defaults in `frontend/lib/config.ts`: REST `http://127.0.0.1:8000`, WS `ws://127.0.0.1:8000/ws`. Emergency radii **500 / 700 / 1000 / 1400 m**.
 
-**Backend.** FastAPI + uvicorn on **http://127.0.0.1:8000** with `--reload` (see `main.py`'s run comment). A 1-second asyncio loop advances each drone along its waypoint list, scores health, checks zones and pairwise proximity, then broadcasts JSON to every `/ws` client. State is a process-global list. CORS is `allow_origins=["*"]` on purpose for a two-port laptop demo. Agent `#region` debug file logging is stripped from `main.py`, `zones.py`, and `vision_bridge.py`. `GET /` reports `city: "dubai"` and the live drone count (five on a default fleet).
+**Backend.** uvicorn `main:app` on 127.0.0.1:**8000**. CORS `allow_origins=["*"]` for two ports on one laptop. `tick_loop` broadcasts every `TICK_S = 1.0` wall second; physics sub-steps at `SUBSTEP_S = 0.25` sim seconds. A* only re-runs when the risk map or a route is dirty (`REPLANS_PER_TICK = 6`). `vision_loop` scores one ground-camera frame every 2 s.
 
-**Simulation.** Five drones. `missions.py` loads `dense_waypoints` (~360 points per track) from `ml/trajectories.json` and fits them into a Downtown Dubai box (`SPAN_DEG = 0.024`, ~2.6 km, plus per-drone offsets). Raw `waypoints` (~20 ADS-B fixes) are provenance; they are used only if a track has fewer than 40 dense points. If the JSON is missing, four-corner Dubai fallback legs in `drones.py` are used. Missions loop (open tracks ping-pong). `drones.py` emits `behavior` (cruise / orbit / hold / climb / descend) and `trackSource` (`opensky` when a fitted track loaded, else `sim`). Reroute is a perpendicular offset past the zone radius plus 100 m — no terrain cost grid.
+**Planner.** Multi-objective weighted A* over `RiskMap.cost_field` (`planner.py`). Heuristic inflated by `ASTAR_EPSILON = 1.25` (result bounded 25% above optimal). Hard cells are infinity and never expanded. 8-connected path is string-pulled into a few clear legs. Per-drone weights in `sim.weights_for`: low battery raises energy/altitude; low health raises `risk_scale` and a landing-near-port term.
 
-**Health (C-MAPSS RUL).** `backend/health_bridge.py` imports `ml/predict.py` directly. Each drone walks a synthetic degrading sensor trace through `HealthMonitor`. Wear seeds them at different life points so the fleet is not five clones at 100%. One model cycle is applied every six sim ticks so health does not collapse in a 10-minute demo.
+**Risk map.** 150 m grid (`CELL_M`). Static: OSM restricted cores (hard), category buffers, airport ceiling 60 m in airport buffers, water vs urban land, roads, crowd hotspots, distance to nearest port. Dynamic: operator/emergency zones, YOLO ground-risk discs, route congestion, predicted aircraft volumes. Costs per metre (from `config.py`): normal 1, low buffer 5, congestion 10, ground HIGH 15, near-restricted 25, aircraft 100, emergency buffer 500.
 
-**Vision (YOLOv8n).** `backend/vision_bridge.py` loads `ml/weights/yolov8n_airspace.pt` when `vision_metrics.json` is present (else `runs/.../best.pt` if that file exists), falling back to stock `ml/yolov8n.pt`. Live model id is **`yolov8n-airspace`** once the trained weights load. Every third tick it scores the next file in `ml/vision_frames/` and attaches a `vision` blob with `frame`, `truth`, `metrics` (plus detections, counts, image, model, ready, width/height). Frames are served as static files at `/media`.
+**Deconfliction.** `conflicts.py`: project each airborne motion 75 s (`CANDIDATE_HORIZON_S`) as (x, y, alt). A drone-drone conflict is same-second proximity closer than **150 m horiz and 30 m vert**. Detection window used for the first-hit search is 45 s (`PREDICT_HORIZON_S`). Predicted conflicts stay red `DECISION_DELAY_S = 2` (skipped if TTC < 8 s), then the **lower-priority** drone yields (CRITICAL > HIGH > NORMAL > LOW). Candidates: climb, descend, hold, lateral detour, weighted-A* replan. Cheapest safe option is flown. **Manned aircraft always win.**
 
-Prompts under `ml/PROMPT.md` and `ml/EXTENSION_PROMPT.md` describe a later layout (AU-AIR missions, Mapbox, `serve.py` on port 8500, a segmentation cost grid). Several of those files do not exist. The running system is FastAPI importing Python ML, Leaflet, and OpenSky-shaped drone paths — not the prompt's target architecture.
+**Emergency.** `emergency.py`: drones inside a new emergency fly a scored exit (every 10 degrees just outside the ring) at `ESCAPE_SPEED_FACTOR = 1.35`, then A* around the now-hard zone to a rejoin point on the **original** route. If the destination is inside, divert to the nearest drone port. Drones whose remaining route would enter the zone reroute before entry. Original track is kept as a dashed ghost on the map until phase `rejoining`.
 
----
+**ML.** Health: `health_bridge.py` walks each drone along a synthetic C-MAPSS sensor trace; one model cycle every 15 airborne sim seconds (`HEALTH_MODEL_EVERY_S`), batched. Vision: `vision_bridge.py` loads `ml/weights/yolov8n_airspace.pt` as `yolov8n-airspace`, else `ml/yolov8n.pt`. Ground sites without a detector count dataset labels; without frames they stay MEDIUM with an empty camera.
 
-## 3. CODEOWNERS
-
-Repo-root `.github/CODEOWNERS`:
-
-| Path | Owner | GitHub |
-| --- | --- | --- |
-| `drone-airspace-guardian/backend/` | Pranav | [@pranav3086](https://github.com/pranav3086) |
-| `drone-airspace-guardian/frontend/` | Joel | [@joelmathewgeorge](https://github.com/joelmathewgeorge) |
-| `drone-airspace-guardian/ml/` | Rohit | [@vrrroro](https://github.com/vrrroro) |
-
-The project README repeats the same split. Stay in your folder unless a change is coordinated. This `context.md` is the exception: it describes the whole stack so the next person does not have to reconstruct it from chat.
+State is in-memory. Restart wipes fleet, zones, and the event log.
 
 ---
 
-## 4. Feature inventory
+## 3. Feature inventory (true now)
 
-What is actually wired, versus what the prompts asked for.
-
-| Feature | Status |
+| Feature | What the code does |
 | --- | --- |
-| Live Leaflet map, Dubai center, five drones | Working (live WS or mock) |
-| Mission names + looped dense waypoint paths | Working; `dense_waypoints` (~360) fitted to Downtown |
-| Draw no-fly (click after arming Draw) | Working; `POST /zones`, default 450 m |
-| Operator zone cap (max 4) | Working |
-| Emergency helicopter inbound | Working; 900 m ring on Downtown, `POST /emergency` |
-| Emergency zones replace the previous emergency (no stacked red fills) | Working (backend + frontend collapse) |
-| Geometric reroute + conflict banner | Working |
-| Pairwise proximity (&lt;100 m horiz, &lt;30 m alt) | Working; flags `affected`, does not reroute |
-| Demo reset (`POST /reset`) | Working; clears zones, rebuilds fleet, resets health monitors |
-| C-MAPSS health bars | Working when `rul_model.joblib` loads |
-| Vision dock (camera panel, boxes, class tally, mAP chip) | Working if YOLO imports; payload includes `frame` / `truth` / `metrics` |
-| Dark HUD chrome (fonts, gold/cyan/red palette) | Working; map sits inside `dag-stage` / `dag-map-frame` |
-| Marker interpolation (~1 s ease) | Working inside `DroneMap` |
-| Mock simulator | Working via env flag; also emits `behavior` + `trackSource` |
-| AU-AIR as the drone missions | **Not built** (`au_air_missions.py` / `.json` are not in the tree) |
-| OpenSky as *background traffic* (separate from drone missions) | **Not built**; OpenSky *is* the drone paths |
-| Dubai segmentation cost-grid reroute | **Not built** |
-| `ml/serve.py` health HTTP service on 8500 | **Not built**; backend imports `predict` |
-| Auth / persistence / deploy | Out of scope |
+| Opening fleet | Eight simulated drones in `SEED_FLEET` (`sim.py`): medical, parcel, food, survey, organ, parcel (low battery), security, retail (worn airframe). Missions are A*-planned port/hospital/mall/district legs, not hardcoded Downtown loops. |
+| Add drone | Toolbar `POST /drones` `{ "mode": "auto" }`. Button reads **Planning route** while A* runs. Notice: *Dxx launched on a clear route* or *Dxx launched. Conflict predicted with …*. Modes `random` / `encounter` exist on the API. Cap via 409 if no plan. |
+| Draw no-fly | Arm **Draw no-fly**, click map. Default **450 m** (`OPERATOR_ZONE_RADIUS_M`), cap **4** (oldest dropped). Hint: *Click the map to place a 450 m no-fly zone. Press Escape to cancel.* Popup **Lift no-fly zone** -> `DELETE /zones/{id}`. Inside drones escape; approaching drones reroute. |
+| Trigger emergency | Select 500/700/1000/1400 m, **Trigger emergency**, click map. Cap **3**. Banner: *Dxx escaping the emergency zone by the shortest safe exit*. Then **Rejoining route**. Backend default radius 700 m if omitted. |
+| Reset | **Reset** -> opening eight, zones cleared, event log restarted. Notice: *Airspace reset to the opening fleet.* WS sends `hello` with `reset: true`. |
+| Sim speed | Top bar **1x 2x 4x** -> `POST /sim` `{ "speed": 1 \| 2 \| 4 }`. |
+| HUD | `StatusPanel` annunciator **SAFE / CAUTION / CONFLICT / EMERGENCY** from `sim._hud`. EMERGENCY if any emergency zone or drone in phase `escaping`; CONFLICT if unresolved predicted conflict or HIGH-risk aircraft; CAUTION if resolving conflicts, MEDIUM aircraft, HIGH/VERY HIGH ground, or weak battery/health; else SAFE. Separate gauges: airspace risk 0-100, fleet health, average RUL (cycles), **average battery**. Battery is not health. |
+| Conflict flash + deconflict | Map + banner from `MapOverlays.AlertBanner`. Types in `airspace.ts`: drone phases `cruise \| holding \| escaping \| rejoining \| returning \| landed \| charging`; conflict marks `none \| predicted \| resolving \| resolved`. Event log expands a **candidate manoeuvre table**. |
+| Event log page | `/events` (`EventLog.tsx`). Same WS. Filter by severity and kind, search drone/text, **Pause live updates**, **Export … as JSON**. Types include `CONFLICT_PREDICTED`, `EMERGENCY_ESCAPE_*`, `RUL_UPDATED`, `GROUND_RISK_*`, etc. (`events.py`). |
+| Predetermined OSM restricted | 39 polygons from `ml/dubai_airspace.json`: 2 airport, 2 airfield, 6 approach funnels, 5 military, 1 palace, 3 government, 9 power, 10 stadium, 1 racecourse. Category buffers in `RESTRICTED_POLICY`. Eight drone ports. Not operator-drawn. |
+| Ground risk monitor | Six sites (`ground.py`): Sheikh Zayed / Al Khail / Al Ittihad / Al Sufouh. YOLO (or labels) -> LOW / MEDIUM / HIGH / VERY HIGH. HIGH+ adds cost and can queue a replan. Right rail `GroundCamera`. |
+| OpenSky live vs replay | Default `AIR_TRAFFIC=live` polls OpenSky for the Dubai box (anonymous ~20 s, OAuth client ~10 s). `AIR_TRAFFIC=replay` (or live failure) replays eight DXB **30L** tracks in `ml/air_traffic.json`. Four scheduled helicopters (MEDEVAC / POLICE / TOUR) always share the drone band. Top bar: **OpenSky live** / **OpenSky stale** / **OpenSky replay**. |
+| Console chrome | Left: HUD + `FleetList` (per-drone battery bar vs health bar). Centre: map, toolbar, legend. Right: `TrafficFeed`, ground camera, `EventTicker`. |
 
-Demo beat: open the map, click **Helicopter inbound**, watch affected drones detour and the banner fire within about a second.
+Leftover, **not** on the live route: `AirspaceDashboard`, `DroneMap`, `MapControls`, `VisionDock`, `ConflictBanner` (old), `useDroneFeed`, `lib/fake-simulator.ts`. `app/page.tsx` mounts `Console` only. `backend/missions.py` (if present) is unused; missions come from `sim.py` + A*. `ml/trajectories.json` is not the live drone path source.
 
 ---
 
-## 5. Datasets
+## 4. Datasets
 
-Raw dumps live under `C:\Users\rohit\Downloads\Datasets\` and are not committed. Only derived artifacts sit in this repo.
+Raw dumps stay off git. Training/export scripts default to `C:\Users\rohit\Downloads\Datasets\...`.
 
-**NASA C-MAPSS (FD001–FD004).** Real turbofan run-to-failure. 160,359 cycles from 709 engines for training; 707 held-out test engines. Shipped model is HistGradientBoosting: RMSE 14.78 cycles, MAE 10.50, R² 0.877, PHM08 3095, ~2.1 MB (`ml/rul_model.joblib`). Engines are split, never rows. RUL target is capped at 125 cycles. Health is that RUL mapped to 0–100 (`healthy` ≥75, `monitor` ≥50, `service_soon` ≥25, `ground_now` &lt;25 on the ML side). The dashboard collapses those four bands to three colors (healthy / watch / critical).
+| Dataset | Role | Git | Live path |
+| --- | --- | --- | --- |
+| OSM / Overpass | `ml/build_airspace.py` -> `ml/dubai_airspace.json` (39 restricted, 8 ports, 78 hospitals, roads, water mask). Cache `ml/.cache/osm/` | JSON **committed**. Cache **gitignored** | Yes. ODbL 1.0 |
+| OpenSky Network | Live ADS-B box. `ml/build_air_traffic.py` -> `ml/air_traffic.json` (8 arrivals/departures re-anchored to DXB 30L). Older `trajectories.json` is leftover capture extract | Derived JSON **committed**. Raw CSV **not** in git | Yes as **manned** traffic, not drone missions |
+| NASA C-MAPSS FD001-FD004 | `ml/train_model.py` -> `rul_model.joblib` (HistGradientBoosting: held-out RMSE **14.78** cycles, MAE 10.50, R2 0.877; 709 train / 707 test engines) | Model **committed**. Raw C-MAPSS **not** in git | Yes — synthetic traces scored by the trained estimator |
+| VisDrone2019-DET | `ml/train_yolov8n.py` -> `weights/yolov8n_airspace.pt` + `vision_metrics.json`. Native 512 crops, 6 classes (person/car/van/truck/bus/motor). Val **mAP50 0.2863** (8 epochs, 924 train / 107 val images) | Weights + metrics **committed**. Frames/runs **gitignored** (`vision_frames/`, `yolo_data/`, `runs/`, `*.pt` except `ml/weights/*.pt`) | Yes as the detector; `ml/vision_frames/` optional fallback stills |
+| AU-AIR | `ml/export_auair_frames.py` -> `ml/auair_frames/` (six 30-frame windows). Licence asks for links, not rebundling | **Gitignored** | Yes when exported. Else VisDrone stills, or MEDIUM + empty camera |
+| Dubai aerial plates `frontend/public/dubai/tile-*.png` | Old overlay | May exist | **Not used.** Live map is Esri |
 
-**OpenSky ADS-B.** Capture over the Indian subcontinent. `ml/build_trajectories.py` ranks tracks by *curvature* (total heading change), cubic-splines them against wall-clock time, and emits 360 dense `[lat, lon]` points per track. `ml/trajectories.json` generated 18 Sep 2026 16:07: 8 tracks, 117 candidates considered, `dense_waypoints` plus the original ~20 raw fixes, speed/altitude profiles scaled into 60–220 m. First five tracks are what the backend flies: `load_mission_tracks()` prefers `dense_waypoints` when a track has at least 40 of them.
-
-**AU-AIR.** Multimodal UAV logs (Aarhus GPS/IMU + frames). Prompted as the real drone missions. `au_air_missions.py` / `au_air_missions.json` are not in the tree. GPS bbox is tiny; do not apply OpenSky's kilometre travel filter.
-
-**VisDrone 2019 DET.** Street-level aerial traffic, not Dubai and not drone-vs-drone. Used to train ground-activity detection (person / car / van / truck / bus / motor). First attempt scored **mAP50 = 0** because whole frames were fed at 320 px and cars shrank below the nano head. `train_yolov8n.py` cut native 512×512 crops (924 train / 107 val, 8 epochs, CPU, imgsz 512). Training **finished 8/8**. Shipped metrics in `ml/weights/vision_metrics.json`: **mAP50 0.2863**, mAP50-95 0.1531, precision 0.351, recall 0.3404, model id `yolov8n-airspace`, trained_at 2026-09-18 16:32:45. Weights copied to `ml/weights/yolov8n_airspace.pt`. Per-class mAP50: person 0.3807, car 0.6265, van 0.1937, truck 0.1284, bus 0.1072, motor 0.2809. That is modest, not 0.00.
-
-**Dubai aerial tiles.** Four plates in `frontend/public/dubai/tile-a.png` … `tile-d.png`, georeferenced around Downtown and overlaid at 0.22 opacity. Extra tiles from the segmentation dataset are in the camera rotation as `dubai-010.jpg` … `dubai-012.jpg`. The U-Net/DeepLab terrain model was never trained.
-
-**Vision frames on disk now.** Nine VisDrone crops (`visdrone-….jpg`) plus three Dubai jpgs, and `ml/vision_frames/truth.json` (labels for the VisDrone stills; Dubai tiles have no ground truth). The directory is gitignored at the repo root.
-
----
-
-## 6. Chronology
-
-Order of what actually happened, compressed:
-
-1. **Bengaluru MVP.** Five drones, Leaflet, FastAPI WS, OpenSky-shaped paths, C-MAPSS health. `test_server.py` and a few `main.py` request examples still use 12.97, 77.59.
-2. **Relocate to Dubai.** Map center, mission names (Marina clinic, Palm grocery, Sheikh Zayed survey, DIFC parts, organ to Emirates Hospital), fallback paths, WS `city: "dubai"`, aerial plates. `BENGALURU` in `config.ts` is an alias of `DUBAI`. Project `README.md` is now the Dubai runbook.
-3. **Zone stacking fix.** Repeated Helicopter inbound drew opaque stacked circles. Emergencies now replace previous emergencies; operator zones cap at four; the client also collapses identical rings. `POST /reset` plus a Reset demo button clears zones, restores the five missions, resets health monitors, broadcasts `reset: true`.
-4. **Interpolation.** Backend still ticks at 1 Hz. `DroneMap` eases marker lat/lon over `INTERPOLATION_MS` (1000). `useInterpolatedPosition.ts` exists but is unused.
-5. **Vision dock.** `VisionDock` + `vision_bridge` + `/media`. Cycles frames, draws boxes, lists counts, shows truth overlays and mAP/epoch chips from the WS payload.
-6. **Dark HUD.** Three-pane shell (fleet | map | camera) with Outfit / IBM Plex Mono and a gold-on-navy palette. `globals.css` defines `dag-body`, `dag-stage`, `dag-map-frame` so the Leaflet map sits inside dashboard chrome rather than a full-viewport overlay.
-7. **Dense missions.** `missions.py` flies `dense_waypoints` (~360), fitted to Downtown. `drones.py` adds `behavior` and `trackSource`.
-8. **YOLO crop run finished.** 8/8 epochs, val mAP50 0.2863 (not 0.00). Metrics JSON + `truth.json` + demo frames exported; `vision_bridge` loads the fine-tune with a `yolov8n.pt` fallback.
-9. **Cleanup.** Agent debug ingest (`posDbg`) removed from the feed hook; file logging stripped from `main.py`, `zones.py`, `vision_bridge.py`. Repo-root `.gitignore` covers env, node, Python, `debug-*.log`, vision frames, and YOLO runs.
+`.gitignore` also drops `venv/`, `.next/`, `node_modules/`, `.env*`, `debug-*.log`.
 
 ---
 
-## 7. How to run (ports from the code)
+## 5. How to run
 
-There is no extra proxy. Two processes, two ports, from the files that actually set them.
+Two PowerShell terminals. Team Python env is `drone-airspace-guardian/ml/venv`. Install **both** requirement files into it.
 
-**API / WebSocket — FastAPI on `http://127.0.0.1:8000`**
+### Backend (FastAPI, 8000)
 
-From `drone-airspace-guardian/README.md` and `main.py` (`uvicorn main:app --reload`):
-
-```bash
-cd drone-airspace-guardian/backend
+```powershell
+cd drone-airspace-guardian\ml
+python -m venv venv          # skip if ml\venv already exists
+.\venv\Scripts\activate
 python -m pip install -r requirements.txt
+python -m pip install -r ..\backend\requirements.txt
+cd ..\backend
+$env:AIR_TRAFFIC = "replay"  # omit to poll live OpenSky
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Do not point this at 8500; that port exists only in an unbuilt `serve.py` prompt.
+`GET http://127.0.0.1:8000/` should include `"city": "dubai"`. Optional smoke: `python test_server.py` (Downtown 25.1972, 55.2744). Drop `--reload` for a stable demo. Without `ultralytics`, map + planner still run.
 
-Frontend contract (defaults if env is unset):
+Optional OpenSky OAuth: `OPENSKY_CLIENT_ID` / `OPENSKY_CLIENT_SECRET`. Poll interval `OPENSKY_POLL_S` (default 20 anonymous / 10 with client).
 
-- `NEXT_PUBLIC_API_BASE_URL` = `http://127.0.0.1:8000`
-- `NEXT_PUBLIC_WS_URL` = `ws://127.0.0.1:8000/ws`
-- `NEXT_PUBLIC_DATA_MODE` = `live` (set `mock` to skip the backend)
+Ground cameras: `python export_auair_frames.py` from `ml/` against a local AU-AIR copy (`AUAIR_DIR` overrides).
 
-HTTP surface:
+### Frontend (Next.js, 3000)
 
-| Method | Path | Role |
-| --- | --- | --- |
-| WS | `/ws` | Position stream (~1 Hz) plus `alert` messages |
-| GET | `/` | Process health: `city: "dubai"`, drone count (5), zone count |
-| GET | `/state` | Full snapshot |
-| GET | `/zones` | Zone list |
-| POST | `/zones` | `{lat, lon, radius}` operator ring (max 4 kept) |
-| POST | `/emergency` | Same body, emergency=true, replaces prior emergency, immediate reroute + alert |
-| POST | `/reset` | Clear zones, rebuild Dubai fleet |
-| GET | `/media/...` | Vision frames from `ml/vision_frames/` |
-
-**Dashboard — Next.js on `http://localhost:3000`**
-
-```bash
-cd drone-airspace-guardian/frontend
+```powershell
+cd drone-airspace-guardian\frontend
 npm install
 npm run dev
 ```
 
-`package.json` script is `next dev` with no port flag, so **3000**. Open that URL. Click **Helicopter inbound**.
+Open http://localhost:3000. Top bar should read **Live**. **Offline** / **Disconnected** means FastAPI is not on 8000.
 
-**ML (optional, not required to open the map)**
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:8000` | REST |
+| `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:8000/ws` | Stream |
+| `AIR_TRAFFIC` | `live` | `replay` uses `ml/air_traffic.json` |
 
-```bash
-cd drone-airspace-guardian/ml
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python sanity_check.py          # C-MAPSS checks
-python train_yolov8n.py         # VisDrone fine-tune; already completed 8/8 on this machine
-```
-
-C-MAPSS retrain needs `CMAPSS_DIR`. Trajectory rebuild needs `OPENSKY_CSV`. YOLO needs `VISDRONE_DIR` (default `C:\Users\rohit\Downloads\Datasets\05_VisDrone_detection_tracking`).
-
-Smoke without the UI: `python backend/test_server.py` (still posts Bangalore coordinates; the WS printout is still useful).
+Retrain (not needed to demo): `python train_model.py`, `python sanity_check.py`, `python train_yolov8n.py`, `python build_airspace.py`, `python build_air_traffic.py`.
 
 ---
 
-## 8. File map
+## 6. API (`backend/main.py`)
 
-```
-.gitignore                      # repo root: env, node, Python, debug-*.log, ml frames/runs
-.github/CODEOWNERS
-drone-airspace-guardian/
-  README.md                 # Dubai runbook + team table + ports
-  context.md                # this file
-  backend/
-    main.py                 # FastAPI app, WS loop, /zones /emergency /reset /state /media
-    drones.py               # tick, lerp, reroute, proximity, fleet factory, behavior + trackSource
-    missions.py             # Dubai box + load trajectories.json dense_waypoints
-    zones.py                # in-memory rings, replace/cap, haversine conflict
-    health_bridge.py        # HealthMonitor + synthetic traces
-    vision_bridge.py        # YOLO snapshot every 3 ticks; trained weights + yolov8n.pt fallback
-    geo_utils.py            # haversine, bearing, offset
-    test_server.py          # WS + REST smoke; Bangalore coords leftover
-    requirements.txt
-  frontend/
-    app/layout.tsx          # fonts, title "Dubai airspace"
-    app/page.tsx            # AirspaceDashboard
-    app/globals.css         # dag-body / dag-stage / dag-map-frame chrome
-    components/AirspaceDashboard.tsx
-    components/DroneMap.tsx
-    components/DronePanel.tsx
-    components/VisionDock.tsx
-    components/MapControls.tsx
-    components/ConflictBanner.tsx
-    components/ErrorNotice.tsx
-    hooks/useDroneFeed.ts   # no posDbg ingest
-    hooks/useInterpolatedPosition.ts   # unused
-    lib/config.ts           # Dubai, ports, tiles, timings
-    lib/api.ts
-    lib/drone-adapter.ts    # drones, zones, vision.frame / truth / metrics
-    lib/fake-simulator.ts
-    lib/health.ts
-    types/airspace.ts
-    public/dubai/tile-*.png
-    .env.example / .env.local
-  ml/
-    predict.py / cmapss.py / train_model.py / sanity_check.py
-    rul_model.joblib / model_metadata.json
-    build_trajectories.py / trajectories.json
-    train_yolov8n.py / train_yolo.log
-    yolov8n.pt              # COCO pretrained fallback
-    weights/yolov8n_airspace.pt
-    weights/vision_metrics.json   # mAP50 0.2863, model yolov8n-airspace
-    vision_frames/          # 9 VisDrone + 3 Dubai + truth.json (gitignored)
-    runs/yolov8n_airspace/  # training dumps (gitignored)
-    PROMPT.md / EXTENSION_PROMPT.md / README.md
-```
+Zone body: `{ "lat", "lon", "radius"? }` metres. Operator default 450 m, emergency default 700 m.
 
-Not in the tree (prompted, never landed): `ml/serve.py`, `ml/au_air_missions.py`, `ml/segmentation/`, `ml/perception/`, `ml/requirements-cv.txt`, `backend/simulation.py`, `conflict.py`, `reroute.py` as separate modules.
+| Method | Path | What it does |
+| --- | --- | --- |
+| WS | `/ws` | `hello` with up to 800 events (`reset: true` after reset); then `state` ~1 Hz; `events` when the bus drained something |
+| GET | `/` | Health: `city: "dubai"`, drone count, restricted-area count, `airTraffic`, detector name |
+| GET | `/world` | Static OSM map + `groundSites` + `planner` constants (cell, separation, costs, speeds) |
+| GET | `/state` | Latest snapshot: drones, zones, aircraft, conflicts, crossings, ground, feed, hud, airTraffic, healthModel |
+| GET | `/events` | `{ "events": [...] }` (`?limit=`, 1-2000, default 500) |
+| POST | `/drones` | `{ "mode": "auto" \| "random" \| "encounter" }`. 409 if no plan |
+| POST | `/zones` | Operator no-fly. Returns zone + `inside` + `approaching` |
+| POST | `/emergency` | Emergency zone. Same shape; drones inside start escape |
+| DELETE | `/zones/{id}` | Lift a drawn zone. 404 if missing |
+| POST | `/sim` | `{ "speed": 1 \| 2 \| 4 }` |
+| POST | `/reset` | Opening fleet, zones cleared, log restarted |
+| GET | `/media/auair/...` | AU-AIR frames if `ml/auair_frames/` exists |
+| GET | `/media/visdrone/...` | VisDrone stills if `ml/vision_frames/` exists |
+
+`POST /drones` -> `{ "drone": {...}, "predictedConflicts": ["D03", ...] }`.  
+`POST /reset` -> `{ "status": "reset", "drones": <opening size> }`.
+
+---
+
+## 7. File map
+
+### Backend (Pranav)
+
+| File | Role |
+| --- | --- |
+| `main.py` | FastAPI, WS, REST, tick + vision loops |
+| `sim.py` | Simulation owner: seed fleet, step, HUD, add_drone / add_zone |
+| `config.py` | All policy numbers |
+| `planner.py` | Weighted A* + string-pull |
+| `emergency.py` | Escape planner + mid-flight avoidance |
+| `risk_map.py` | 150 m cost grid |
+| `conflicts.py` | 4-D prediction + yield manoeuvres |
+| `world.py` | Load OSM JSON, local ENU frame |
+| `zones.py` | Operator + emergency circles |
+| `drones.py` | Drone state, battery vs health |
+| `trajectory.py` | Route / Motion / predict |
+| `aircraft.py` | OpenSky + replay + helis |
+| `ground.py` | Six cameras, risk levels |
+| `vision_bridge.py` | YOLO load/detect |
+| `health_bridge.py` | C-MAPSS bridge |
+| `events.py` | Event bus |
+| `geo_utils.py` | Lat/lon <-> metres |
+| `test_server.py` | Live REST/WS smoke |
+| `test_planner.py` | Planner unit checks |
+
+### Frontend (Joel)
+
+| File | Role |
+| --- | --- |
+| `app/page.tsx` | Console |
+| `app/events/page.tsx` | Event log |
+| `app/layout.tsx` | Provider + TopBar |
+| `components/Console.tsx` | Three-pane shell |
+| `components/AirspaceProvider.tsx` | World fetch, WS, toolbar actions |
+| `components/MapToolbar.tsx` | Add / Draw / Emergency / Reset |
+| `components/StatusPanel.tsx` | HUD annunciator |
+| `components/EventLog.tsx` | `/events` page |
+| `components/AirspaceMap.tsx` | Leaflet |
+| `components/MapOverlays.tsx` | Banner, placing hint, notices, legend |
+| `components/FleetList.tsx` | Battery vs health rows |
+| `types/airspace.ts` | HUD, phases, conflicts, world |
+| `lib/api.ts` | REST client |
+| `lib/config.ts` | Ports, radii |
+
+### ML (Rohit)
+
+| File | Role |
+| --- | --- |
+| `predict.py` | `predict_health`, `HealthMonitor`, telemetry simulator |
+| `cmapss.py` | Shared features |
+| `train_model.py` / `sanity_check.py` | RUL train + four checks |
+| `rul_model.joblib` / `model_metadata.json` | Shipped estimator |
+| `build_airspace.py` / `dubai_airspace.json` | OSM world |
+| `build_air_traffic.py` / `air_traffic.json` | DXB replay |
+| `train_yolov8n.py` | VisDrone fine-tune |
+| `weights/yolov8n_airspace.pt` + `vision_metrics.json` | Detector + mAP50 0.2863 |
+| `export_auair_frames.py` | Local camera export |
+
+---
+
+## 8. Team
+
+Stay in your folder unless a change is coordinated. This file is the exception: it describes the whole stack.
+
+| Person | Role | Directory | GitHub |
+| --- | --- | --- | --- |
+| Joel | Frontend | `drone-airspace-guardian/frontend/` | [@joelmathewgeorge](https://github.com/joelmathewgeorge) |
+| Pranav | Backend | `drone-airspace-guardian/backend/` | [@pranav3086](https://github.com/pranav3086) |
+| Rohit | ML | `drone-airspace-guardian/ml/` | [@vrrroro](https://github.com/vrrroro) |
 
 ---
 
 ## 9. Known limitations
 
-- **Not a real UTM.** Simulated BVLOS. No command-and-control, no ADS-B in, no SORA case.
-- **Health is turbofan physics on drone-shaped traces.** Retrain when real airframe sensors exist. `predict_health` on a single row is optimistic; the bridge uses `HealthMonitor`.
-- **OpenSky is airliners.** Geometry is real; altitude and speed are rescaled. Capture is a short subcontinent window. Paths are fitted into Downtown, not flown there.
-- **Reroute is a single perpendicular poke.** No occupancy grid, no Dubai segmentation, no 3D separation manoeuvre. Proximity only sets `affected`.
-- **Vision domain gap.** VisDrone is not Dubai. Dubai tiles in the rotation have no boxes. Fine-tune mAP50 is 0.2863 — better than the failed 0.00 run, still modest. Cars dominate; bus/truck stay weak.
-- **Docs drift.** `ml/README.md` still describes the old 8×~20-waypoint straightness-1.0 extract. `main.py` examples and `test_server.py` still use 12.97, 77.59. `BENGALURU` remains an alias in `config.ts`.
-- **In-memory only.** Restart wipes zones and fleet progress.
-- **CORS `*`.** Fine on a laptop; not a product posture.
-- **`useInterpolatedPosition` is dead code.** Interpolation lives in `DroneMap`.
-- **Frontend health bands ≠ ML status labels.** UI: &gt;70 / ≥30 / else. Model: 75 / 50 / 25.
-- **Ultralytics lives in `ml/requirements.txt`.** The prompt wanted a separate `requirements-cv.txt` so the health install stayed small. That split never happened.
-- **CPU-only training.** No NVIDIA GPU on this machine. YOLO was slow; the backend loads whatever weights are on disk at startup (or after `--reload`).
+- The fleet is **software**. Nothing commands or tracks a physical UAV.
+- Planner numbers (150 m cells, 150/30 m drone separation, cost table, 40-150 m altitude band) are demo policy, not certified UTM.
+- OpenSky live is real ADS-B and often rate-limits anonymously. Replay tracks are **airliner** state vectors re-anchored to DXB 30L, not Dubai drone flights. Use `AIR_TRAFFIC=replay` for a judge demo.
+- Scheduled helicopters are scripted on OSM hospitals and E11, not live rotorcraft.
+- Health is a **turbofan** RUL model on stand-in traces. Battery is a separate energy drain (`BATTERY_PER_KM`, climb, hover). Real airframe telemetry would need a new training set.
+- Ground cameras replay AU-AIR (or VisDrone) stills. VisDrone is street-level aerial traffic, not Dubai and not drone-vs-drone. **mAP50 = 0.2863** (8 epochs) — modest, not production detection.
+- AU-AIR frames are local-only (gitignored). Without the export, cameras degrade.
+- Zones, fleet, and the event log vanish on process restart.
+- Leftover v1 dashboard files (`AirspaceDashboard`, mock simulator, `missions.py` / `trajectories.json` as drone paths) are unused.
 
 ---
 
-## 10. Open work
+## 10. Open work for branch `v3airguard` (do not implement here)
 
-Nothing from the previous in-flight list is still running. Remaining honest leftovers:
+Intended ML / dataset expansion only. Hybrid planner console is v2. Branch exists so this work can land later.
 
-1. **Simulated fleet.** Five software drones. No radio, no physical UAV, no real BVLOS operation.
-2. **YOLO mAP is still modest.** 0.2863 mAP50 after 8 epochs on VisDrone crops. Not production detection; the first run really was 0.00, this one is not.
-3. **AU-AIR was never extracted.** No `au_air_missions.py` / `au_air_missions.json`. Missions are OpenSky shapes, not Aarhus UAV logs.
-4. **Prompt backlog, not started:** OpenSky as *other traffic*, Dubai segmentation cost grid, `serve.py` + `prime_monitor` HTTP fallback (unneeded while the backend is Python).
-5. **Leftover Bangalore in smoke tests / docstrings.** `test_server.py` and `main.py` request examples still post 12.97, 77.59. `ml/README.md` trajectory section is stale versus `trajectories.json`.
-6. **Dead hook.** Drop unused `useInterpolatedPosition` or actually use it.
-7. **Not committed.** This working tree is a local demo snapshot. Do not commit this file (or the rest) unless someone asks.
+- Train YOLOv8n longer and on more VisDrone source frames (today: 8 epochs, 520/110 source images cropped to 924/107). Target a higher val mAP50 than **0.2863**; keep the six HUD classes.
+- Put more VisDrone val/test-dev stills into the live camera rotation instead of a handful of fallback frames.
+- Export richer AU-AIR into the loop: more than six 30-frame windows, more of the eight real sessions, keep GPS/IMU sidecars on every frame the ground monitor already knows how to show.
+- Use AU-AIR session traces as **drone missions** (downsample GPS to waypoints, rescale altitude into the 40-150 m band) rather than only as camera footage under A*-invented legs.
+- Drive OpenSky harder: more than eight DXB-30L replay flights from the capture, and a more reliable live path (client credentials, backoff, clearer stale/replay fallback).
+- Mix AU-AIR boxes into YOLO training (or a second head) so the detector sees low-altitude UAV viewpoints, not only VisDrone street crops.
+- Optionally add the unused Dubai aerial segmentation tiles as a static ground-cost layer under the 150 m risk map (Road/Land/Water/Building) without replacing OSM hard NFZs.
+- Keep C-MAPSS as the health model unless a drone-specific RUL set appears; do not pretend more OpenSky/VisDrone rows improve turbofan RUL.
+- Do not change the operator console contract (toolbar, HUD states, `/ws` snapshot shape) unless a dataset feature needs a new field; prefer filling existing `ground.telemetry` / `detections` / `airTraffic`.
+- Leave leftover v1 UI files alone unless a cleanup PR is explicitly requested.
 
-Do not treat `PROMPT.md` as the live architecture; it is the backlog that produced this tree.
+When starting v3: read this file, then `ml/train_yolov8n.py`, `ml/export_auair_frames.py`, `ml/build_air_traffic.py`, and `backend/ground.py` / `aircraft.py`. Stay in `ml/` unless backend must ingest a new JSON.

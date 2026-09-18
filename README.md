@@ -2,7 +2,7 @@
 
 **A BVLOS operations console for Downtown Dubai.** Simulated delivery drones fly missions over real OpenStreetMap restricted airspace while an operator adds traffic, draws no-fly rings, and drops placeable emergencies — and the planner detours, deconflicts, or escapes without a joystick.
 
-> Same-laptop CodeCortex demo: Next.js on **:3000**, FastAPI on **:8000**. No database, no radio link, no physical UAV. Product code lives in [`drone-airspace-guardian/`](drone-airspace-guardian/). Runbook: [`drone-airspace-guardian/README.md`](drone-airspace-guardian/README.md).
+> Same-laptop CodeCortex demo: Next.js on **:3000**, FastAPI on **:8000**. No database, no radio link, no physical UAV. Product code lives in [`drone-airspace-guardian/`](drone-airspace-guardian/). Runbook: [`drone-airspace-guardian/README.md`](drone-airspace-guardian/README.md). Restore notes for a new agent: [`drone-airspace-guardian/context.md`](drone-airspace-guardian/context.md).
 
 ---
 
