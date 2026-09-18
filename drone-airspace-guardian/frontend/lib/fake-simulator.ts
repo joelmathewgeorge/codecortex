@@ -1,46 +1,48 @@
-import type { Coordinate, Drone, NoFlyZone } from "@/types/airspace";
-import { BENGALURU } from "./config";
+import type { Coordinate, Drone, DroneBehavior, NoFlyZone } from "@/types/airspace";
+import { DUBAI } from "./config";
 
 const ROUTES: Coordinate[][] = [
   [
-    { lat: 12.9716, lon: 77.5946 },
-    { lat: 12.978, lon: 77.59 },
-    { lat: 12.985, lon: 77.585 },
-    { lat: 12.9716, lon: 77.5946 },
+    { lat: 25.1972, lon: 55.2744 },
+    { lat: 25.204, lon: 55.27 },
+    { lat: 25.21, lon: 55.265 },
+    { lat: 25.1972, lon: 55.2744 },
   ],
   [
-    { lat: 12.96, lon: 77.58 },
-    { lat: 12.965, lon: 77.59 },
-    { lat: 12.97, lon: 77.6 },
-    { lat: 12.96, lon: 77.58 },
+    { lat: 25.189, lon: 55.282 },
+    { lat: 25.193, lon: 55.276 },
+    { lat: 25.198, lon: 55.269 },
+    { lat: 25.189, lon: 55.282 },
   ],
   [
-    { lat: 12.98, lon: 77.61 },
-    { lat: 12.975, lon: 77.6 },
-    { lat: 12.968, lon: 77.592 },
-    { lat: 12.98, lon: 77.61 },
+    { lat: 25.205, lon: 55.264 },
+    { lat: 25.199, lon: 55.27 },
+    { lat: 25.192, lon: 55.278 },
+    { lat: 25.205, lon: 55.264 },
   ],
   [
-    { lat: 12.955, lon: 77.6 },
-    { lat: 12.962, lon: 77.605 },
-    { lat: 12.97, lon: 77.598 },
-    { lat: 12.955, lon: 77.6 },
+    { lat: 25.186, lon: 55.268 },
+    { lat: 25.192, lon: 55.274 },
+    { lat: 25.199, lon: 55.28 },
+    { lat: 25.186, lon: 55.268 },
   ],
   [
-    { lat: 12.99, lon: 77.58 },
-    { lat: 12.984, lon: 77.588 },
-    { lat: 12.976, lon: 77.595 },
-    { lat: 12.99, lon: 77.58 },
+    { lat: 25.211, lon: 55.281 },
+    { lat: 25.204, lon: 55.276 },
+    { lat: 25.196, lon: 55.27 },
+    { lat: 25.211, lon: 55.281 },
   ],
 ];
 
 const NAMES = [
-  "Delivery A — Medical Supplies",
-  "Delivery B — Food Package",
-  "Survey — Traffic Monitoring",
-  "Delivery C — Electronics",
-  "Emergency — Organ Transport",
+  "Marina clinic run",
+  "Palm grocery drop",
+  "Sheikh Zayed survey",
+  "DIFC parts delivery",
+  "Organ to Emirates Hospital",
 ];
+
+const BEHAVIORS: DroneBehavior[] = ["cruise", "climb", "orbit", "cruise", "descend"];
 
 export function createMockDrones(): Drone[] {
   return ROUTES.map((path, i) => ({
@@ -54,6 +56,11 @@ export function createMockDrones(): Drone[] {
     path,
     reroutePath: [],
     mission: NAMES[i],
+    alt: [120, 95, 140, 110, 85][i],
+    speed: [12, 9, 14, 11, 8][i],
+    behavior: BEHAVIORS[i],
+    // Mock mode is synthetic, and the provenance chip should say so rather than claim a dataset.
+    trackSource: "sim",
   }));
 }
 
@@ -64,7 +71,7 @@ export function stepMock(
 ): { drones: Drone[]; indices: number[] } {
   const nextIdx = [...indices];
   const next = drones.map((d, i) => {
-    const path = d.path.length ? d.path : [{ lat: BENGALURU.lat, lon: BENGALURU.lon }];
+    const path = d.path.length ? d.path : [{ lat: DUBAI.lat, lon: DUBAI.lon }];
     const idx = nextIdx[i] ?? 0;
     const a = path[idx % path.length];
     const b = path[(idx + 1) % path.length];
@@ -84,10 +91,11 @@ export function stepMock(
       heading: (Math.atan2(b.lon - a.lon, b.lat - a.lat) * 180) / Math.PI,
       affected: Boolean(hit),
       status: hit ? "rerouting" : "normal",
+      behavior: hit ? "orbit" : (BEHAVIORS[i] ?? "cruise"),
       reroutePath: hit
         ? [
             { lat, lon },
-            { lat: hit.lat + 0.008, lon: hit.lon + 0.008 },
+            { lat: hit.lat + 0.004, lon: hit.lon + 0.004 },
             b,
           ]
         : [],
@@ -99,9 +107,9 @@ export function stepMock(
 export function mockEmergencyZone(): NoFlyZone {
   return {
     id: "emergency-mock",
-    lat: 12.9716,
-    lon: 77.5946,
-    radius: 700,
+    lat: DUBAI.lat,
+    lon: DUBAI.lon,
+    radius: 900,
     source: "emergency",
   };
 }

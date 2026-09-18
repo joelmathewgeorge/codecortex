@@ -20,9 +20,9 @@ export function getHealthLevel(health: number): HealthLevel {
 
 export function getHealthColor(health: number): string {
   const level = getHealthLevel(health);
-  if (level === "healthy") return "#3ee08f";
-  if (level === "watch") return "#f5c542";
-  return "#ff5b6e";
+  if (level === "healthy") return "#1ad1c4";
+  if (level === "watch") return "#e0b84a";
+  return "#ff6b7a";
 }
 
 export function getHealthLabel(health: number): string {

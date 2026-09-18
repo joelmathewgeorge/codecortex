@@ -1,0 +1,37 @@
+{
+  "model": "yolov8n-airspace",
+  "epochs": 8,
+  "images": 924,
+  "mAP50": 0.2863,
+  "mAP50_95": 0.1531,
+  "precision": 0.351,
+  "recall": 0.3404,
+  "imgsz": 512,
+  "crop": 512,
+  "classes": [
+    "person",
+    "car",
+    "van",
+    "truck",
+    "bus",
+    "motor"
+  ],
+  "per_class_mAP50": {
+    "person": 0.3807,
+    "car": 0.6265,
+    "van": 0.1937,
+    "truck": 0.1284,
+    "bus": 0.1072,
+    "motor": 0.2809
+  },
+  "val_images": 107,
+  "train_boxes": 21928,
+  "train_seconds": 1627.1,
+  "dataset": "VisDrone2019-DET-train (native-resolution crops)",
+  "trained_at": "2026-09-18 16:32:45",
+  "demo_frames": {
+    "visdrone_frames": 9,
+    "dubai_frames": 3,
+    "kb": 837
+  }
+}

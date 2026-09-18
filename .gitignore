@@ -1,0 +1,57 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node / Next
+node_modules/
+.npm
+.pnpm-store/
+.next/
+out/
+.turbo/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Cursor / debug session dumps
+.cursor/
+debug-*.log
+
+# ML training dumps and demo frames (not the shipped weights)
+drone-airspace-guardian/ml/vision_frames/
+drone-airspace-guardian/ml/yolo_data/
+drone-airspace-guardian/ml/runs/
+
+# YOLO checkpoints. Training dumps and the stock COCO net stay out.
+# ml/weights/yolov8n_airspace.pt is 5.92 MB, so the trained bundle is commitable.
+*.pt
+!drone-airspace-guardian/ml/weights/
+!drone-airspace-guardian/ml/weights/*.pt

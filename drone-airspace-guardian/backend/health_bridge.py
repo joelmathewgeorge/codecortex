@@ -22,6 +22,13 @@ _ready = False
 _error: str | None = None
 
 
+def reset_monitors() -> None:
+    """Drop per-drone traces so Reset demo starts health from a clean clock."""
+    _monitors.clear()
+    _traces.clear()
+    _cycles.clear()
+
+
 def warmup() -> None:
     """Load the joblib bundle once. Safe to call from FastAPI startup."""
     global _ready, _error

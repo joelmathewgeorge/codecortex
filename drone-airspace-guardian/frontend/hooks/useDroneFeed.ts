@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AlertPayload, Drone, FeedState, NoFlyZone } from "@/types/airspace";
+import type { AlertPayload, Drone, FeedState, NoFlyZone, VisionFrame } from "@/types/airspace";
 import { getDataMode, getWsUrl, LIVE_RECONNECT_MS, MOCK_TICK_MS } from "@/lib/config";
-import { adaptAlert, adaptDrones, adaptZones } from "@/lib/drone-adapter";
+import { adaptAlert, adaptDrones, adaptVision, adaptZones } from "@/lib/drone-adapter";
 import { createMockDrones, stepMock } from "@/lib/fake-simulator";
 
 export function useDroneFeed() {
@@ -12,6 +12,7 @@ export function useDroneFeed() {
   const [zones, setZones] = useState<NoFlyZone[]>([]);
   const [feed, setFeed] = useState<FeedState>(mode === "mock" ? "simulation" : "connecting");
   const [alert, setAlert] = useState<AlertPayload | null>(null);
+  const [vision, setVision] = useState<VisionFrame | null>(null);
   const indices = useRef([0, 0, 0, 0, 0]);
   const zonesRef = useRef(zones);
   zonesRef.current = zones;
@@ -26,7 +27,7 @@ export function useDroneFeed() {
         setAlert(
           affected.length
             ? {
-                message: `⚠ Airspace conflict — rerouting ${affected.length} drone(s)`,
+                message: `Rerouting ${affected.length} drone(s) around a no-fly`,
                 affectedIds: affected.map((d) => d.id),
               }
             : null,
@@ -55,22 +56,32 @@ export function useDroneFeed() {
             const next = adaptDrones(msg.drones);
             if (next.length) setDrones(next);
             if (msg.zones) setZones(adaptZones(msg.zones));
-            const affected = next.filter((d) => d.affected);
-            setAlert(
-              affected.length
-                ? {
-                    message: `⚠ Airspace conflict — rerouting ${affected.length} drone(s)`,
-                    affectedIds: affected.map((d) => d.id),
-                  }
-                : null,
-            );
+            if (msg.vision) setVision(adaptVision(msg.vision));
+            if (msg.reset) {
+              setAlert(null);
+            } else {
+              const affected = next.filter((d) => d.affected);
+              setAlert(
+                affected.length
+                  ? {
+                      message: `Rerouting ${affected.length} drone(s) around a no-fly`,
+                      affectedIds: affected.map((d) => d.id),
+                    }
+                  : null,
+              );
+            }
           }
           if (msg.type === "alert") {
             const parsed = adaptAlert(msg);
             if (parsed) setAlert(parsed);
             if (msg.zone) {
               const [zone] = adaptZones([msg.zone]);
-              if (zone) setZones((prev) => [...prev.filter((z) => z.id !== zone.id), zone]);
+              if (zone) {
+                setZones((prev) => [
+                  ...prev.filter((z) => z.source !== "emergency" && z.id !== zone.id),
+                  zone,
+                ]);
+              }
             }
           }
         } catch (err) {
@@ -91,5 +102,5 @@ export function useDroneFeed() {
     };
   }, [mode]);
 
-  return { drones, zones, setZones, feed, alert, mode };
+  return { drones, zones, setZones, feed, alert, mode, vision };
 }

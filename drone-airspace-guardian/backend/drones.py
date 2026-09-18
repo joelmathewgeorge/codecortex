@@ -3,15 +3,14 @@ Drone simulation — movement along paths, conflict checking, and rerouting.
 
 HOW THE SIMULATION WORKS:
     Each drone has a list of waypoints (lat/lon pairs) forming its mission
-    path.  Every tick (~1 second), the drone moves a step along the line
-    segment from its current waypoint towards the next.
+    path.  Every tick (~1 second), the drone walks `speed` metres along the
+    polyline (consuming as many dense samples as that distance covers).
 
-    Movement uses LINEAR INTERPOLATION (lerp):
-        new_position = current + t * (next - current)
-    where t is the fraction of the segment to travel in one tick.
+    Dense OpenSky tracks are ~360 evenly spaced points, so the flown path
+    stays curved instead of pivoting at a handful of corners.
 
-    When the drone reaches a waypoint, it advances to the next segment.
-    When it finishes all waypoints, it loops back to the start.
+    Open (A→B) tracks ping-pong rather than drawing a straight closing chord.
+    Already-closed fallback loops wrap.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from dataclasses import dataclass, field
 
 from geo_utils import bearing, haversine, offset_point
 from health_bridge import score_drone
-from missions import MISSIONS, load_mission_waypoints
+from missions import MISSIONS, load_mission_tracks
 from zones import Zone, check_conflicts
 
 PROXIMITY_M = 100.0
@@ -60,15 +59,25 @@ class Drone:
     health: int = 100
     wear: float = 0.15
     affected: bool = False
+    track_source: str = "sim"
     _original_waypoints: list[tuple[float, float]] = field(default_factory=list)
     _reroute_waypoints: list[tuple[float, float]] = field(default_factory=list)
+    _speed_profile: list[float] = field(default_factory=list)
+    _alt_profile: list[float] = field(default_factory=list)
+    _cruise_speed: float = 0.0
+    _direction: int = 1
+    _closed: bool = False
 
     def __post_init__(self):
         """Set initial position to the first waypoint."""
         if self.waypoints:
             self.lat, self.lon = self.waypoints[0]
-            # Keep a backup of the original path
             self._original_waypoints = list(self.waypoints)
+            a, b = self.waypoints[0], self.waypoints[-1]
+            self._closed = abs(a[0] - b[0]) < 1e-6 and abs(a[1] - b[1]) < 1e-6
+        if self._cruise_speed <= 0:
+            self._cruise_speed = self.speed
+        self._apply_profile()
 
     def to_dict(self) -> dict:
         """
@@ -76,8 +85,7 @@ class Drone:
         This IS the API contract — don't change field names without
         telling Joel.
         """
-        # Compute heading toward next waypoint
-        target = self.waypoints[self.current_idx]
+        target = self.waypoints[self.current_idx] if self.waypoints else (self.lat, self.lon)
         hdg = bearing(self.lat, self.lon, target[0], target[1])
 
         return {
@@ -91,45 +99,107 @@ class Drone:
             "health": int(round(self.health)),
             "mission": self.mission,
             "affected": self.affected,
-            "path": [{"lat": lat, "lon": lon} for lat, lon in self._original_waypoints],
-            "reroutePath": [{"lat": lat, "lon": lon} for lat, lon in self._reroute_waypoints],
+            "behavior": self._behavior(),
+            "trackSource": self.track_source,
+            "path": [{"lat": round(lat, 6), "lon": round(lon, 6)} for lat, lon in self._original_waypoints],
+            "reroutePath": [{"lat": round(lat, 6), "lon": round(lon, 6)} for lat, lon in self._reroute_waypoints],
         }
+
+    def _profile_index(self) -> int:
+        n = max(len(self._original_waypoints), 1)
+        return min(max(self.current_idx, 0), n - 1)
+
+    def _apply_profile(self) -> None:
+        i = self._profile_index()
+        if self._speed_profile:
+            i_s = min(i, len(self._speed_profile) - 1)
+            self.speed = max(4.0, self._cruise_speed * self._speed_profile[i_s])
+        if self._alt_profile:
+            i_a = min(i, len(self._alt_profile) - 1)
+            self.alt = self._alt_profile[i_a]
+
+    def _behavior(self) -> str:
+        if self.status == "rerouting":
+            return "orbit"
+        alts = self._alt_profile
+        if len(alts) >= 2:
+            i = min(self._profile_index(), len(alts) - 1)
+            ahead = alts[min(len(alts) - 1, i + 10)]
+            behind = alts[max(0, i - 10)]
+            delta = ahead - behind
+            if delta > 12:
+                return "climb"
+            if delta < -12:
+                return "descend"
+        if self.speed < 6:
+            return "hold"
+        wps = self.waypoints
+        if len(wps) > 12:
+            i = min(max(self.current_idx, 1), len(wps) - 2)
+            turn = abs(
+                bearing(wps[i - 1][0], wps[i - 1][1], wps[i][0], wps[i][1])
+                - bearing(wps[i][0], wps[i][1], wps[i + 1][0], wps[i + 1][1])
+            )
+            turn = min(turn, 360 - turn)
+            if turn > 35:
+                return "orbit"
+        return "cruise"
+
+    def _turn_around(self) -> None:
+        if self.status == "rerouting":
+            self.waypoints = list(self._original_waypoints)
+            self.status = "en-route"
+            self._reroute_waypoints = []
+            self.affected = False
+            self._direction = 1
+            self.current_idx = 1 if len(self.waypoints) > 1 else 0
+            return
+        if self._closed:
+            self.current_idx = 0 if self._direction > 0 else max(len(self.waypoints) - 1, 0)
+            return
+        if self._direction > 0:
+            self._direction = -1
+            self.current_idx = max(len(self.waypoints) - 2, 0)
+        else:
+            self._direction = 1
+            self.current_idx = 1 if len(self.waypoints) > 1 else 0
 
     def tick(self) -> None:
         """
         Advance the drone by one simulation step (~1 second of real time).
 
-        WHAT HAPPENS EACH TICK:
-        1. Compute how far the drone should move (speed * 1 second)
-        2. Compute direction toward the next waypoint
-        3. Move the drone along that direction
-        4. If we've reached the waypoint, advance to the next one
-        5. Randomize the health field (placeholder for ML model)
-        6. Run conflict check against all active zones
+        Walks `speed` metres along the waypoint polyline so a 360-point curve
+        is traced at the labelled cruise speed instead of snapping one vertex
+        per tick.
         """
-        target_lat, target_lon = self.waypoints[self.current_idx]
-        dist_to_target = haversine(self.lat, self.lon, target_lat, target_lon)
+        if not self.waypoints:
+            return
+        if self.current_idx < 0 or self.current_idx >= len(self.waypoints):
+            self._turn_around()
 
-        if dist_to_target < self.speed:
-            # Close enough — snap to waypoint and advance
-            self.lat, self.lon = target_lat, target_lon
-            self.current_idx += 1
+        budget = max(self.speed, 0.1)
+        hops = 0
+        while budget > 0.4 and hops < 64:
+            hops += 1
+            if self.current_idx < 0 or self.current_idx >= len(self.waypoints):
+                self._turn_around()
+                break
+            target_lat, target_lon = self.waypoints[self.current_idx]
+            dist = haversine(self.lat, self.lon, target_lat, target_lon)
+            if dist <= budget or dist < 1.0:
+                self.lat, self.lon = target_lat, target_lon
+                budget -= dist
+                self.current_idx += self._direction
+                if self.current_idx < 0 or self.current_idx >= len(self.waypoints):
+                    self._turn_around()
+                    break
+            else:
+                t = budget / dist
+                self.lat = self.lat + t * (target_lat - self.lat)
+                self.lon = self.lon + t * (target_lon - self.lon)
+                budget = 0
 
-            # If we've completed all waypoints, loop back
-            if self.current_idx >= len(self.waypoints):
-                self.current_idx = 0
-                # If we were rerouting, restore original path
-                if self.status == "rerouting":
-                    self.waypoints = list(self._original_waypoints)
-                    self.status = "en-route"
-                    self._reroute_waypoints = []
-                    self.affected = False
-        else:
-            # Move toward target by `speed` metres
-            # t = fraction of the remaining distance to cover in this tick
-            t = self.speed / dist_to_target
-            self.lat = self.lat + t * (target_lat - self.lat)
-            self.lon = self.lon + t * (target_lon - self.lon)
+        self._apply_profile()
 
         scored = score_drone(self.id, wear=self.wear)
         if scored is not None:
@@ -152,6 +222,10 @@ class Drone:
 
         This creates a simple "dodge to the side" behavior.
         """
+        if not self.waypoints:
+            return
+        if self.current_idx < 0 or self.current_idx >= len(self.waypoints):
+            self.current_idx = min(max(self.current_idx, 0), len(self.waypoints) - 1)
         next_wp = self.waypoints[self.current_idx]
         conflicts = check_conflicts(self.lat, self.lon) or check_conflicts(next_wp[0], next_wp[1])
 
@@ -173,6 +247,10 @@ class Drone:
 
     def force_reroute_check(self) -> list[Zone]:
         """Immediate conflict check for POST /emergency (current position + next waypoint)."""
+        if not self.waypoints:
+            return []
+        if self.current_idx < 0 or self.current_idx >= len(self.waypoints):
+            self.current_idx = min(max(self.current_idx, 0), len(self.waypoints) - 1)
         next_wp = self.waypoints[self.current_idx]
         conflicts = check_conflicts(self.lat, self.lon) or check_conflicts(next_wp[0], next_wp[1])
         if conflicts:
@@ -185,12 +263,18 @@ class Drone:
 # ---------------------------------------------------------------------------
 
 FALLBACK_PATHS = [
-    [(12.9716, 77.5946), (12.9780, 77.5900), (12.9850, 77.5850), (12.9716, 77.5946)],
-    [(12.9352, 77.6245), (12.9400, 77.6150), (12.9450, 77.6050), (12.9352, 77.6245)],
-    [(12.9698, 77.7500), (12.9650, 77.7400), (12.9600, 77.7300), (12.9698, 77.7500)],
-    [(12.9250, 77.5470), (12.9300, 77.5550), (12.9370, 77.5620), (12.9250, 77.5470)],
-    [(13.0358, 77.5970), (13.0300, 77.5900), (13.0250, 77.5830), (13.0358, 77.5970)],
+    [(25.1972, 55.2744), (25.2040, 55.2700), (25.2100, 55.2650), (25.1972, 55.2744)],
+    [(25.1890, 55.2820), (25.1930, 55.2760), (25.1980, 55.2690), (25.1890, 55.2820)],
+    [(25.2050, 55.2640), (25.1990, 55.2700), (25.1920, 55.2780), (25.2050, 55.2640)],
+    [(25.1860, 55.2680), (25.1920, 55.2740), (25.1990, 55.2800), (25.1860, 55.2680)],
+    [(25.2110, 55.2810), (25.2040, 55.2760), (25.1960, 55.2700), (25.2110, 55.2810)],
 ]
+
+
+def reset_fleet(fleet: list[Drone]) -> None:
+    """Rebuild the five Downtown Dubai missions in place."""
+    fleet.clear()
+    fleet.extend(create_default_drones())
 
 
 def mark_proximity(drones: list[Drone]) -> None:
@@ -204,22 +288,28 @@ def mark_proximity(drones: list[Drone]) -> None:
 
 def create_default_drones() -> list[Drone]:
     """
-    Five drones around Bangalore. Paths prefer reshaped OpenSky tracks from
+    Five drones over Downtown Dubai. Paths prefer reshaped OpenSky tracks from
     ml/trajectories.json so the missions have real ADS-B curvature; if that
-    file is missing we keep Pranav's original hardcoded legs.
+    file is missing we keep the local Dubai fallback legs.
     """
-    ml_paths = load_mission_waypoints()
-    paths = ml_paths if ml_paths else FALLBACK_PATHS
+    ml_tracks = load_mission_tracks()
     fleet = []
     for i, (drone_id, mission, speed, alt, wear) in enumerate(MISSIONS):
+        track = ml_tracks[i] if ml_tracks else None
+        waypoints = list(track["waypoints"]) if track else list(FALLBACK_PATHS[i])
+        alt_profile = list(track["alt_profile"]) if track else []
+        start_alt = alt_profile[0] if alt_profile else alt
         fleet.append(
             Drone(
                 id=drone_id,
-                waypoints=list(paths[i]),
+                waypoints=waypoints,
                 speed=speed,
                 mission=mission,
-                alt=alt,
+                alt=start_alt,
                 wear=wear,
+                track_source=track["source"] if track else "sim",
+                _speed_profile=list(track["speed_profile"]) if track else [],
+                _alt_profile=alt_profile,
             )
         )
     return fleet

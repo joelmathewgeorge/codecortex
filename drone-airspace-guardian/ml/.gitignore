@@ -33,3 +33,7 @@ opensky_trajectories.csv
 # Sanity-check chart is referenced by the README, so it is kept.
 *.png
 !health_degradation.png
+!vision_frames/**
+
+yolo_data/
+runs/
