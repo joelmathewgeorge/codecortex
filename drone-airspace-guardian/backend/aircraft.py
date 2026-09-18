@@ -9,9 +9,10 @@ Sources:
            OPENSKY_POLL_S seconds on a background thread (anonymous by default, or the
            OAuth2 API client when OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET are set).
            Positions are dead-reckoned between polls. One poll serves every drone.
-  replay   Used when live is switched off (AIR_TRAFFIC=replay) or has failed: real
-           OpenSky arrivals and departures from ml/air_traffic.json, re-anchored to DXB
-           runway 30L and launched one after another.
+  replay   Used when live is switched off (AIR_TRAFFIC=replay) or after STALE_S with no
+           healthy poll. Real OpenSky arrivals/departures from ml/air_traffic.json,
+           re-anchored to DXB 30L. A merely stale live feed (status "live (stale)",
+           still startswith "live") dead-reckons last tracks and does NOT launch replay.
   heli     Helicopters on scheduled low-level routes between real Dubai hospitals and
            landmarks. They are what shares the drones' altitude band.
 
@@ -27,6 +28,7 @@ import os
 import ssl
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
@@ -234,10 +236,12 @@ class AircraftService:
             for key in [k for k in self._replay_active]:
                 self.aircraft.pop(key, None)
             self._replay_active.clear()
+        elif self._poller is not None and self._poller.ok_once and now - self._last_live < STALE_S:
+            # Keep dead-reckoning the last live tracks. Do NOT launch replay airliners
+            # while the feed is merely stale — that used to mix fake DXB traffic on top.
+            self.status = "live (stale)"
         else:
             self.status = "replay" if self.mode != "live" or self._poller is None else "replay (OpenSky unreachable)"
-            if self._poller is not None and self._poller.ok_once and now - self._last_live < STALE_S:
-                self.status = "live (stale)"
             self._run_replay(now)
 
         for ac in list(self.aircraft.values()):
@@ -443,7 +447,10 @@ class OpenSkyPoller(threading.Thread):
                 self.failures += 1
                 self.last_error = str(exc)
                 wait = min(300.0, self.interval * (2 ** min(self.failures, 4)))
-                if self.failures in (1, 5):
+                if "429" in str(exc):
+                    wait = min(300.0, max(wait, 90.0))
+                    print(f"[aircraft] OpenSky HTTP 429; backing off {wait:.0f}s")
+                elif self.failures in (1, 5):
                     print(f"[aircraft] OpenSky poll failed ({exc}); falling back to replay traffic")
             time.sleep(wait)
 
@@ -472,6 +479,11 @@ class OpenSkyPoller(threading.Thread):
         s, w, n, e = self.bbox
         query = urllib.parse.urlencode({"lamin": s, "lomin": w, "lamax": n, "lomax": e, "extended": 1})
         req = urllib.request.Request(f"{OPENSKY_URL}?{query}", headers={"User-Agent": "CodeCortex-airspace-sim", **self._auth_header()})
-        with urllib.request.urlopen(req, timeout=20, context=self._ssl_context()) as resp:
-            data = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=20, context=self._ssl_context()) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise RuntimeError("OpenSky HTTP 429 rate limited") from exc
+            raise
         return data.get("states") or []

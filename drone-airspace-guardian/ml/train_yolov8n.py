@@ -1,30 +1,18 @@
 """
-Fine-tune YOLOv8n on VisDrone2019-DET so the live camera panel runs a real trained
-detector instead of falling back to stock COCO weights.
+Fine-tune YOLOv8n on native-resolution VisDrone2019-DET crops, mixed with AU-AIR boxes
+on TRAIN only, so the ground-camera HUD detector sees both street-level and low-altitude
+UAV viewpoints.
 
-WHY THE FIRST ATTEMPT SCORED mAP50 = 0
-    The earlier run fed 48 whole VisDrone frames into a 320 px network. VisDrone frames
-    are ~1360x765 to 2000x1500 and a car occupies roughly 30x20 px, so downscaling to
-    320 px shrinks a car to about 7x5 px. YOLOv8n's smallest stride-8 head cannot
-    resolve that, the head never saw a positive match, and every metric stayed at zero.
+Dataset: VisDrone2019-DET (train/val) + AU-AIR (train mix + separate holdout).
+Task: 6-class object detection (person, car, van, truck, bus, motor).
+Why this model: YOLOv8n is the live detector already loaded by vision_bridge.py; we
+continue from COCO or the existing airspace fine-tune, never from scratch.
+What is NOT claimed: VisDrone is not Dubai and not drone-vs-drone. AU-AIR is Denmark
+UAV footage. Val mAP50 stays VisDrone-only so it is comparable to the 0.2863 baseline.
+AU-AIR holdout mAP50 is recorded separately and is never mixed into that number.
 
-WHAT THIS SCRIPT DOES INSTEAD
-    1. Crops NATIVE-RESOLUTION windows (default 512x512) out of the big frames, centred
-       on clusters of annotated vehicles. No downscaling happens, so a car stays ~30x20
-       px inside a 512 px training image — a size the nano model can actually learn.
-    2. Merges the 10 VisDrone categories down to 6 demo-legible ones. Ten classes split a
-       small CPU budget too thinly, and the HUD only needs to read "car / van / truck /
-       bus / person / motor".
-    3. Trains from COCO-pretrained yolov8n.pt (never from scratch) at imgsz == crop size.
-    4. Writes weights/yolov8n_airspace.pt plus weights/vision_metrics.json, which
-       backend/vision_bridge.py serves to the dashboard as `vision.metrics`.
-    5. Exports a demo frame rotation into vision_frames/ with a truth.json sidecar that
-       carries the VisDrone ground-truth boxes for those frames.
-
-WHAT THIS DOES NOT CLAIM
-    VisDrone is street-level aerial traffic imagery, not Dubai and not drone-vs-drone
-    detection. It is used here to estimate ground activity (vehicle/pedestrian density)
-    beneath a flight path, which is exactly what the dataset supports.
+Who reads the artifact: backend/vision_bridge.py loads weights/yolov8n_airspace.pt;
+the operator sees detections on GroundCamera. Metrics land in vision_metrics.json.
 
 RUN
     cd ml
@@ -51,6 +39,12 @@ VISDRONE = Path(
         r"C:\Users\rohit\Downloads\Datasets\05_VisDrone_detection_tracking",
     )
 )
+AUAIR_ROOT = Path(
+    os.environ.get(
+        "AUAIR_DIR",
+        r"C:\Users\rohit\Downloads\Datasets\04_AUAIR_multimodal_uav",
+    )
+)
 DUBAI_TILES = Path(
     os.environ.get(
         "DUBAI_TILES_DIR",
@@ -68,29 +62,43 @@ WEIGHTS = ROOT / "weights" / "yolov8n_airspace.pt"
 METRICS = ROOT / "weights" / "vision_metrics.json"
 FRAMES = ROOT / "vision_frames"
 TRUTH = FRAMES / "truth.json"
+AUAIR_HOLDOUT_YAML = DATA / "auair_holdout.yaml"
 
 # --- training budget -------------------------------------------------------
-# Tuned for a CPU-only 8-core Ryzen: ~20-30 minutes wall clock. Override with env
-# vars when moving to a faster box.
 CROP = int(os.environ.get("YOLO_CROP", 512))
 IMGSZ = int(os.environ.get("YOLO_IMGSZ", CROP))
-EPOCHS = int(os.environ.get("YOLO_EPOCHS", 8))
 BATCH = int(os.environ.get("YOLO_BATCH", 8))
-N_SRC_TRAIN = int(os.environ.get("YOLO_SRC_TRAIN", 520))
-N_SRC_VAL = int(os.environ.get("YOLO_SRC_VAL", 110))
+N_SRC_TRAIN = int(os.environ.get("YOLO_SRC_TRAIN", 1000))
+N_SRC_VAL = int(os.environ.get("YOLO_SRC_VAL", 180))
 CROPS_PER_TRAIN_IMAGE = 2
 MIN_BOXES_PER_CROP = 4
 SEED = 7
+AUAIR_MIX_FRAC = float(os.environ.get("YOLO_AUAIR_FRAC", 0.20))  # of TRAIN crops
+BASELINE_MAP50 = 0.2863
+
+
+def _default_epochs() -> int:
+    try:
+        import torch
+
+        return 20 if torch.cuda.is_available() else 12
+    except Exception:
+        return 12
+
+
+EPOCHS = int(os.environ.get("YOLO_EPOCHS", _default_epochs()))
 
 # --- label space -----------------------------------------------------------
 # VisDrone category ids: 0 ignored-region, 1 pedestrian, 2 people, 3 bicycle,
 # 4 car, 5 van, 6 truck, 7 tricycle, 8 awning-tricycle, 9 bus, 10 motor, 11 others.
-# 0 and 11 must be dropped per the official toolkit. bicycle/tricycle/awning-tricycle
-# are dropped too: they are rare, visually ambiguous from altitude, and spending a
-# short CPU budget on them costs accuracy on the classes the demo actually shows.
 NAMES = ["person", "car", "van", "truck", "bus", "motor"]
 VISDRONE_TO_CLASS = {1: 0, 2: 0, 4: 1, 5: 2, 6: 3, 9: 4, 10: 5}
 VEHICLE_CLASSES = {1, 2, 3, 4}  # car, van, truck, bus — preferred crop anchors
+
+# AU-AIR categories: Human, Car, Truck, Van, Motorbike, Bicycle, Bus, Trailer
+# Map: Human→person, Car→car, Van→van, Truck→truck, Bus→bus, Motorbike→motor.
+# Drop Bicycle. Trailer optional → truck.
+AUAIR_TO_CLASS = {0: 0, 1: 1, 2: 3, 3: 2, 4: 5, 6: 4, 7: 3}
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +206,22 @@ def to_yolo_lines(
     return lines
 
 
+def _write_yaml(path: Path, train_rel: str, val_rel: str) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                f"path: {DATA.as_posix()}",
+                f"train: {train_rel}",
+                f"val: {val_rel}",
+                "names:",
+                *[f"  {i}: {n}" for i, n in enumerate(NAMES)],
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dataset preparation
 # ---------------------------------------------------------------------------
@@ -252,11 +276,146 @@ def build_split(
     return crops, objects
 
 
+def _auair_boxes(frame: dict, iw: int, ih: int) -> list[tuple[int, float, float, float, float]]:
+    boxes: list[tuple[int, float, float, float, float]] = []
+    for b in frame.get("bbox") or []:
+        try:
+            cat = int(b["class"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if cat not in AUAIR_TO_CLASS:
+            continue
+        x1 = max(0.0, float(b["left"]))
+        y1 = max(0.0, float(b["top"]))
+        x2 = min(float(iw), x1 + float(b["width"]))
+        y2 = min(float(ih), y1 + float(b["height"]))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        boxes.append((AUAIR_TO_CLASS[cat], x1, y1, x2, y2))
+    return boxes
+
+
+def _crop_auair_frame(
+    frame: dict,
+    img_root: Path,
+    out_img: Path,
+    out_lbl: Path,
+    prefix: str,
+    rng: random.Random,
+    min_boxes: int = 2,
+) -> int:
+    src = img_root / "images" / frame["image_name"]
+    if not src.exists():
+        return 0
+    try:
+        with Image.open(src) as im:
+            iw, ih = im.size
+            boxes = _auair_boxes(frame, iw, ih)
+            if len(boxes) < min_boxes:
+                return 0
+            windows = pick_windows(boxes, iw, ih, CROP, 1, rng)
+            if not windows:
+                # AU-AIR frames can be sparse; accept a centred crop if native size allows.
+                if iw < CROP or ih < CROP:
+                    return 0
+                x0 = max(0, (iw - CROP) // 2)
+                y0 = max(0, (ih - CROP) // 2)
+                inside = [
+                    b
+                    for b in boxes
+                    if b[1] >= x0 and b[2] >= y0 and b[3] <= x0 + CROP and b[4] <= y0 + CROP
+                ]
+                windows = [(x0, y0, inside)] if len(inside) >= min_boxes else []
+            if not windows:
+                return 0
+            rgb = im.convert("RGB")
+            written = 0
+            for k, (x0, y0, inside) in enumerate(windows):
+                lines = to_yolo_lines(inside, x0, y0, CROP)
+                if len(lines) < min_boxes:
+                    continue
+                name = f"{prefix}_{Path(frame['image_name']).stem}_c{k}"
+                rgb.crop((x0, y0, x0 + CROP, y0 + CROP)).save(out_img / f"{name}.jpg", quality=88)
+                (out_lbl / f"{name}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+                written += 1
+            return written
+    except (OSError, ValueError) as exc:
+        print(f"  skip AU-AIR {frame.get('image_name')}: {exc}")
+        return 0
+
+
+def mix_auair(visdrone_train_crops: int, rng: random.Random) -> dict:
+    """
+    Add AU-AIR native 512 crops into TRAIN only (~15-25% of train crops) and write a
+    disjoint AU-AIR holdout split used later for a separate mAP50. Val stays VisDrone.
+    """
+    ann_path = AUAIR_ROOT / "annotations.json"
+    if not ann_path.exists():
+        raise SystemExit(f"AU-AIR annotations not found at {ann_path} (set AUAIR_DIR)")
+    print("=" * 72)
+    print("MIX AU-AIR INTO TRAIN (val remains VisDrone-only)")
+    print("=" * 72)
+    payload = json.loads(ann_path.read_text(encoding="utf-8"))
+    frames = [f for f in payload.get("annotations") or [] if f.get("bbox")]
+    if not frames:
+        raise SystemExit(f"AU-AIR annotations at {ann_path} contain no boxes")
+    rng.shuffle(frames)
+
+    target_total_frac = min(0.25, max(0.15, AUAIR_MIX_FRAC))
+    # A / (V + A) = f  =>  A = f/(1-f) * V
+    want_train = max(80, int(round(visdrone_train_crops * target_total_frac / (1.0 - target_total_frac))))
+    want_hold = max(40, min(120, want_train // 4))
+
+    train_img = DATA / "images" / "train"
+    train_lbl = DATA / "labels" / "train"
+    hold_img = DATA / "images" / "auair_holdout"
+    hold_lbl = DATA / "labels" / "auair_holdout"
+    hold_img.mkdir(parents=True, exist_ok=True)
+    hold_lbl.mkdir(parents=True, exist_ok=True)
+
+    train_crops = 0
+    hold_crops = 0
+    train_used: set[str] = set()
+    # Stride through the shuffled list so neighbouring video frames are not all taken.
+    for i, frame in enumerate(frames):
+        if i % 12 != 0:
+            continue
+        name = frame.get("image_name") or ""
+        if train_crops < want_train:
+            n = _crop_auair_frame(frame, AUAIR_ROOT, train_img, train_lbl, "auair", rng)
+            if n:
+                train_crops += n
+                train_used.add(name)
+        elif hold_crops < want_hold and name not in train_used:
+            n = _crop_auair_frame(frame, AUAIR_ROOT, hold_img, hold_lbl, "hold", rng)
+            if n:
+                hold_crops += n
+        if train_crops >= want_train and hold_crops >= want_hold:
+            break
+
+    mix_frac = train_crops / max(1, visdrone_train_crops + train_crops)
+    print(
+        f"  AU-AIR train mix: {train_crops} crops "
+        f"({mix_frac:.1%} of train), holdout {hold_crops} crops"
+    )
+    if train_crops < 20:
+        raise SystemExit(f"AU-AIR mix produced too few train crops ({train_crops})")
+    if hold_crops >= 10:
+        _write_yaml(AUAIR_HOLDOUT_YAML, "images/train", "images/auair_holdout")
+    return {
+        "auair_train_crops": train_crops,
+        "auair_holdout_crops": hold_crops,
+        "auair_mix_frac": round(mix_frac, 4),
+    }
+
+
 def prepare() -> tuple[Path, dict]:
     """Rebuild yolo_data/ from scratch and write data.yaml."""
     print("=" * 72)
     print(f"PREPARE VISDRONE CROPS  ({CROP}x{CROP}, native resolution)")
     print("=" * 72)
+    if not TRAIN_SRC.exists():
+        raise SystemExit(f"VisDrone train split not found at {TRAIN_SRC} (set VISDRONE_DIR)")
     if DATA.exists():
         shutil.rmtree(DATA)
     rng = random.Random(SEED)
@@ -265,25 +424,16 @@ def prepare() -> tuple[Path, dict]:
     if tr_crops < 50 or va_crops < 10:
         raise SystemExit(f"Too few crops produced (train={tr_crops}, val={va_crops})")
 
+    au = mix_auair(tr_crops, rng)
     yaml_path = DATA / "data.yaml"
-    yaml_path.write_text(
-        "\n".join(
-            [
-                f"path: {DATA.as_posix()}",
-                "train: images/train",
-                "val: images/val",
-                "names:",
-                *[f"  {i}: {n}" for i, n in enumerate(NAMES)],
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    _write_yaml(yaml_path, "images/train", "images/val")
     stats = {
-        "train_images": tr_crops,
+        "train_images": tr_crops + au["auair_train_crops"],
+        "visdrone_train_images": tr_crops,
         "val_images": va_crops,
         "train_boxes": tr_objs,
         "val_boxes": va_objs,
+        **au,
     }
     print(f"  data.yaml -> {yaml_path}")
     return yaml_path, stats
@@ -293,14 +443,12 @@ def prepare() -> tuple[Path, dict]:
 # Demo frame rotation for the camera panel
 # ---------------------------------------------------------------------------
 
-def export_frames(n_visdrone: int = 9, n_dubai: int = 3) -> dict:
+def export_frames(n_visdrone: int = 24, n_dubai: int = 0) -> dict:
     """
-    Fill vision_frames/ with crops that are dense with vehicles, plus a couple of Dubai
-    aerial tiles so the rotation still looks like the city the demo claims to be over.
+    Fill vision_frames/ with dense VisDrone crops from val and/or test-dev (unseen
+    test-dev preferred). truth.json carries ground-truth boxes for the overlay.
 
-    Demo crops come from VisDrone test-dev, which the model never trains on, so the boxes
-    in the panel are honest predictions on unseen imagery. truth.json carries the matching
-    ground-truth boxes for the overlay comparison.
+    These stills feed GM-5 and GM-6 on the live console (see backend/ground.py).
     """
     print("=" * 72)
     print("EXPORT DEMO FRAMES")
@@ -311,51 +459,61 @@ def export_frames(n_visdrone: int = 9, n_dubai: int = 3) -> dict:
             old.unlink()
 
     rng = random.Random(SEED + 1)
-    ann_dir = DEMO_SRC / "annotations"
-    images = sorted((DEMO_SRC / "images").glob("*.jpg"))
-    rng.shuffle(images)
+    sources: list[Path] = []
+    if DEMO_SRC.exists():
+        sources.append(DEMO_SRC)
+    if VAL_SRC.exists():
+        sources.append(VAL_SRC)
 
     truth: dict[str, list[dict]] = {}
     exported = 0
-    for src_img in images:
+    for src in sources:
         if exported >= n_visdrone:
             break
-        try:
-            with Image.open(src_img) as im:
-                iw, ih = im.size
-                boxes = read_boxes(ann_dir / f"{src_img.stem}.txt", iw, ih)
-                vehicles = sum(1 for b in boxes if b[0] in VEHICLE_CLASSES)
-                if vehicles < 10:
-                    continue
-                windows = pick_windows(boxes, iw, ih, CROP, 1, rng)
-                if not windows:
-                    continue
-                x0, y0, inside = windows[0]
-                if sum(1 for b in inside if b[0] in VEHICLE_CLASSES) < 6:
-                    continue
-                name = f"visdrone-{src_img.stem[:14]}-{x0}-{y0}.jpg"
-                im.convert("RGB").crop((x0, y0, x0 + CROP, y0 + CROP)).save(
-                    FRAMES / name, quality=86
-                )
-                truth[name] = [
-                    {
-                        "label": NAMES[cls],
-                        "xyxy": [
-                            round(x1 - x0, 1),
-                            round(y1 - y0, 1),
-                            round(x2 - x0, 1),
-                            round(y2 - y0, 1),
-                        ],
-                    }
-                    for cls, x1, y1, x2, y2 in inside
-                ]
-                exported += 1
-                print(f"  {name}: {len(inside)} truth boxes ({vehicles} vehicles in frame)")
-        except (OSError, ValueError) as exc:
-            print(f"  skip {src_img.name}: {exc}")
+        ann_dir = src / "annotations"
+        images = sorted((src / "images").glob("*.jpg"))
+        rng.shuffle(images)
+        for src_img in images:
+            if exported >= n_visdrone:
+                break
+            try:
+                with Image.open(src_img) as im:
+                    iw, ih = im.size
+                    boxes = read_boxes(ann_dir / f"{src_img.stem}.txt", iw, ih)
+                    vehicles = sum(1 for b in boxes if b[0] in VEHICLE_CLASSES)
+                    if vehicles < 8:
+                        continue
+                    windows = pick_windows(boxes, iw, ih, CROP, 1, rng)
+                    if not windows:
+                        continue
+                    x0, y0, inside = windows[0]
+                    if sum(1 for b in inside if b[0] in VEHICLE_CLASSES) < 5:
+                        continue
+                    name = f"visdrone-{src_img.stem[:14]}-{x0}-{y0}.jpg"
+                    if (FRAMES / name).exists():
+                        continue
+                    im.convert("RGB").crop((x0, y0, x0 + CROP, y0 + CROP)).save(
+                        FRAMES / name, quality=86
+                    )
+                    truth[name] = [
+                        {
+                            "label": NAMES[cls],
+                            "xyxy": [
+                                round(x1 - x0, 1),
+                                round(y1 - y0, 1),
+                                round(x2 - x0, 1),
+                                round(y2 - y0, 1),
+                            ],
+                        }
+                        for cls, x1, y1, x2, y2 in inside
+                    ]
+                    exported += 1
+                    print(f"  {name}: {len(inside)} truth boxes ({vehicles} vehicles in frame)")
+            except (OSError, ValueError) as exc:
+                print(f"  skip {src_img.name}: {exc}")
 
     dubai = 0
-    if DUBAI_TILES.exists():
+    if n_dubai > 0 and DUBAI_TILES.exists():
         for tile in sorted(DUBAI_TILES.glob("tile_0*.png"))[10:]:
             if dubai >= n_dubai:
                 break
@@ -383,18 +541,44 @@ def export_frames(n_visdrone: int = 9, n_dubai: int = 3) -> dict:
 # Training
 # ---------------------------------------------------------------------------
 
+def _box_metrics(final) -> dict:
+    box = final.box
+    return {
+        "mAP50": round(float(box.map50), 4),
+        "mAP50_95": round(float(box.map), 4),
+        "precision": round(float(box.mp), 4),
+        "recall": round(float(box.mr), 4),
+        "per_class_mAP50": {
+            NAMES[int(c)]: round(float(box.ap50[i]), 4)
+            for i, c in enumerate(final.box.ap_class_index)
+            if int(c) < len(NAMES)
+        },
+    }
+
+
 def train(yaml_path: Path, stats: dict) -> dict:
     import torch
     from ultralytics import YOLO
 
-    # Ultralytics leaves torch at its default thread count, which on this box comes up
-    # as 1 and makes CPU training roughly 6x slower than it needs to be.
-    torch.set_num_threads(max(1, (os.cpu_count() or 4) - 2))
-    print(f"  torch threads: {torch.get_num_threads()}")
+    cuda = torch.cuda.is_available()
+    device = "0" if cuda else "cpu"
+    if not cuda:
+        torch.set_num_threads(max(1, (os.cpu_count() or 4) - 2))
+    print(f"  device: {device}   torch threads: {torch.get_num_threads()}   epochs: {EPOCHS}")
 
     WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
-    base = ROOT / "yolov8n.pt"
-    model = YOLO(str(base) if base.exists() else "yolov8n.pt")
+    existing = WEIGHTS if WEIGHTS.exists() else None
+    coco = ROOT / "yolov8n.pt"
+    if existing is not None:
+        base = existing
+        print(f"  starting from existing fine-tune {base.name}")
+    elif coco.exists():
+        base = coco
+        print(f"  starting from {base.name}")
+    else:
+        base = "yolov8n.pt"
+        print("  starting from ultralytics yolov8n.pt (download if needed)")
+    model = YOLO(str(base))
 
     started = time.time()
     model.train(
@@ -402,14 +586,14 @@ def train(yaml_path: Path, stats: dict) -> dict:
         epochs=EPOCHS,
         imgsz=IMGSZ,
         batch=BATCH,
-        device="cpu",
-        workers=4,
+        device=device,
+        workers=2 if device == "cpu" else 4,
         project=str(RUNS),
         name=RUN_NAME,
         exist_ok=True,
-        patience=0,          # short budget: never early-stop, use every epoch
+        patience=4,
         cos_lr=True,
-        close_mosaic=2,      # last 2 epochs see un-mosaicked frames like inference does
+        close_mosaic=2,
         val=True,
         plots=True,
         verbose=True,
@@ -425,41 +609,70 @@ def train(yaml_path: Path, stats: dict) -> dict:
 
     # Re-validate the exported weights so the reported numbers describe the file the
     # backend actually loads, not whatever epoch happened to be in memory.
-    final = YOLO(str(WEIGHTS)).val(
-        data=str(yaml_path), imgsz=IMGSZ, batch=BATCH, device="cpu", workers=2, verbose=False
+    exported = YOLO(str(WEIGHTS))
+    final = exported.val(
+        data=str(yaml_path), imgsz=IMGSZ, batch=BATCH, device=device, workers=2, verbose=False
     )
-    box = final.box
+    visdrone = _box_metrics(final)
+
+    auair_hold = None
+    if AUAIR_HOLDOUT_YAML.exists() and (DATA / "images" / "auair_holdout").exists():
+        n_hold = len(list((DATA / "images" / "auair_holdout").glob("*.jpg")))
+        if n_hold >= 10:
+            hold = exported.val(
+                data=str(AUAIR_HOLDOUT_YAML),
+                imgsz=IMGSZ,
+                batch=BATCH,
+                device=device,
+                workers=2,
+                verbose=False,
+            )
+            auair_hold = _box_metrics(hold)
+            print(f"  AU-AIR holdout mAP50 {auair_hold['mAP50']:.4f} on {n_hold} crops")
+
     metrics = {
         "model": "yolov8n-airspace",
         "epochs": EPOCHS,
         "images": stats["train_images"],
-        "mAP50": round(float(box.map50), 4),
-        "mAP50_95": round(float(box.map), 4),
-        "precision": round(float(box.mp), 4),
-        "recall": round(float(box.mr), 4),
+        "mAP50": visdrone["mAP50"],
+        "mAP50_95": visdrone["mAP50_95"],
+        "precision": visdrone["precision"],
+        "recall": visdrone["recall"],
         "imgsz": IMGSZ,
         "crop": CROP,
         "classes": NAMES,
-        "per_class_mAP50": {
-            NAMES[int(c)]: round(float(box.ap50[i]), 4)
-            for i, c in enumerate(final.box.ap_class_index)
-            if int(c) < len(NAMES)
-        },
+        "per_class_mAP50": visdrone["per_class_mAP50"],
         "val_images": stats["val_images"],
         "train_boxes": stats["train_boxes"],
         "train_seconds": round(elapsed, 1),
-        "dataset": "VisDrone2019-DET-train (native-resolution crops)",
+        "dataset": "VisDrone2019-DET-train native 512 crops + AU-AIR train mix; val is VisDrone-only",
+        "visdrone_train_images": stats.get("visdrone_train_images"),
+        "auair_train_crops": stats.get("auair_train_crops"),
+        "auair_mix_frac": stats.get("auair_mix_frac"),
+        "auair_holdout_crops": stats.get("auair_holdout_crops"),
+        "auair_holdout_mAP50": None if auair_hold is None else auair_hold["mAP50"],
+        "auair_holdout": auair_hold,
+        "baseline_mAP50": BASELINE_MAP50,
+        "beat_baseline": visdrone["mAP50"] > BASELINE_MAP50,
+        "device": device,
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     METRICS.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print("=" * 72)
-    print(f"  mAP50      {metrics['mAP50']:.4f}")
-    print(f"  mAP50-95   {metrics['mAP50_95']:.4f}")
-    print(f"  precision  {metrics['precision']:.4f}   recall {metrics['recall']:.4f}")
-    print(f"  per class  {metrics['per_class_mAP50']}")
-    print(f"  wall clock {elapsed / 60:.1f} min over {EPOCHS} epochs")
+    print(f"  VisDrone val mAP50  {metrics['mAP50']:.4f}  (baseline {BASELINE_MAP50})")
+    print(f"  mAP50-95            {metrics['mAP50_95']:.4f}")
+    print(f"  precision           {metrics['precision']:.4f}   recall {metrics['recall']:.4f}")
+    print(f"  per class           {metrics['per_class_mAP50']}")
+    if auair_hold is not None:
+        print(f"  AU-AIR holdout      {auair_hold['mAP50']:.4f}")
+    print(f"  wall clock          {elapsed / 60:.1f} min over {EPOCHS} epochs")
     print(f"  metrics -> {METRICS}")
     print("=" * 72)
+    if metrics["mAP50"] <= BASELINE_MAP50:
+        print(
+            f"ACCEPT FAIL: VisDrone val mAP50 {metrics['mAP50']} did not beat {BASELINE_MAP50}. "
+            "Exactly one retry is allowed (more VisDrone source or +4 epochs)."
+        )
     return metrics
 
 
@@ -471,6 +684,8 @@ def main() -> None:
     if "--prepare-only" in sys.argv:
         return
     metrics = train(yaml_path, stats)
+    if "--skip-frames" in sys.argv:
+        return
     frames = export_frames()
     metrics["demo_frames"] = frames
     METRICS.write_text(json.dumps(metrics, indent=2), encoding="utf-8")

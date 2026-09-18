@@ -61,5 +61,9 @@ drone-airspace-guardian/ml/runs/
 drone-airspace-guardian/ml/auair_frames/
 drone-airspace-guardian/ml/.cache/
 
+# Full-res mosaic is a local intermediate (~190 MB); the Leaflet overlay is frontend/public/dubai/ground-cost.png.
+drone-airspace-guardian/ml/dubai_mosaic.png
+drone-airspace-guardian/ml/logs/
+
 # Ultralytics writes val runs wherever it is launched from.
 /runs/

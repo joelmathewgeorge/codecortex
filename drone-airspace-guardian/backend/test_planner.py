@@ -7,6 +7,7 @@ Uses AIR_TRAFFIC=replay and no scheduled helicopters so results do not depend on
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
@@ -16,7 +17,7 @@ os.environ.setdefault("AIR_TRAFFIC", "replay")
 import numpy as np  # noqa: E402
 
 from aircraft import Aircraft  # noqa: E402
-from config import ALT_MAX_M, DRONE_H_SEP_M, DRONE_V_SEP_M  # noqa: E402
+from config import ALT_MAX_M, DRONE_H_SEP_M, DRONE_V_SEP_M, ML_DIR  # noqa: E402
 from drones import Drone  # noqa: E402
 from sim import Simulation  # noqa: E402
 from trajectory import Motion, make_route  # noqa: E402
@@ -231,6 +232,43 @@ def test_battery_and_health_change_the_weights():
     d.health = 40.0
     worn = s.weights_for(d)
     assert worn.risk_scale > base.risk_scale and worn.landing > 0
+
+
+def test_auair_missions_are_reanchored_in_dubai():
+    path = ML_DIR / "auair_missions.json"
+    assert path.exists() and path.stat().st_size > 0
+    data = json.loads(path.read_text(encoding="utf-8"))
+    missions = data.get("missions") or []
+    assert len(missions) >= 3
+    for m in missions:
+        assert len(m.get("waypoints") or []) >= 4
+        for wp in m["waypoints"]:
+            assert 25.02 <= wp["lat"] <= 25.30
+            assert 55.10 <= wp["lon"] <= 55.43
+            assert 40.0 <= wp["alt_m"] <= 150.0
+    from sim import AUAIR_SEED_SLOTS, SEED_FLEET
+    assert AUAIR_SEED_SLOTS == (1, 3, 6)
+    assert [SEED_FLEET[i][0] for i in AUAIR_SEED_SLOTS] == ["parcel", "survey", "security"]
+
+
+def test_opensky_replay_has_raised_flight_count():
+    path = ML_DIR / "air_traffic.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    flights = data.get("flights") or []
+    assert len(flights) >= 12
+    kinds = {f["kind"] for f in flights}
+    assert "arrival" in kinds and "departure" in kinds
+
+
+def test_hard_static_untouched_without_dubai_layer():
+    """Dubai mosaic is not ingested. OSM hard cores stay identical; ground cost is finite."""
+    s = fresh()
+    hard = s.riskmap.hard_static.copy()
+    assert getattr(s.riskmap, "dubai_ground", None) is None
+    assert not hasattr(s.riskmap, "_apply_dubai_ground_cost")
+    assert np.array_equal(hard, s.riskmap.hard_static)
+    assert np.isfinite(s.riskmap.ground_static).all()
+    assert not np.isinf(s.riskmap.ground_static).any()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,11 @@
 """
 The simulation: one object that owns the world, the fleet and every planner.
 
+SEED_FLEET slots 1, 3, 6 (parcel / survey / security) fly AU-AIR GPS tracks from
+ml/auair_missions.json (Denmark ENU, rescaled, re-anchored at Dubai ports). Other
+seed drones stay on A* port-to-destination. Hard-NFZ waypoint cells are skipped;
+clipped segments are replaced with A* between remaining safe waypoints.
+
 Each tick (event-driven: A* only re-runs when something changed):
   1. physics sub-steps: drones fly their motions, aircraft move
   2. manoeuvre bookkeeping: holds and altitude windows expire, escapes leave their zone,
@@ -16,6 +21,7 @@ Each tick (event-driven: A* only re-runs when something changed):
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import random
 import threading
@@ -29,6 +35,7 @@ from config import (
     EMERGENCY_RADIUS_M,
     HEALTH_MODEL_EVERY_S,
     LOW_BATTERY,
+    ML_DIR,
     OPERATOR_ZONE_RADIUS_M,
     REPLANS_PER_TICK,
     SIM_SPEEDS,
@@ -71,6 +78,9 @@ DEST_KINDS = {
     "survey": ("district",),
     "security": ("district", "mall"),
 }
+# 0-based SEED_FLEET slots that fly AU-AIR GPS tracks (parcel, survey, security).
+AUAIR_SEED_SLOTS = (1, 3, 6)
+AUAIR_MISSIONS_FILE = ML_DIR / "auair_missions.json"
 
 
 class Simulation:
@@ -215,9 +225,125 @@ class Simulation:
         self.drones[d.id] = d
         self.on_route_changed(d)
 
+    def _load_auair_missions(self) -> list[dict]:
+        if not AUAIR_MISSIONS_FILE.exists():
+            return []
+        try:
+            data = json.loads(AUAIR_MISSIONS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        return [m for m in (data.get("missions") or []) if len(m.get("waypoints") or []) >= 4]
+
+    def _mission_xy(self, mission: dict) -> list[tuple[float, float]]:
+        """Safe ENU waypoints: drop cells that are already hard NFZ cores."""
+        out: list[tuple[float, float]] = []
+        for wp in mission["waypoints"]:
+            x, y = self.world.frame.point(float(wp["lat"]), float(wp["lon"]))
+            r, c = self.riskmap.cell_of(x, y)
+            if self.riskmap.hard_static[r, c]:
+                continue
+            if out and math.hypot(x - out[-1][0], y - out[-1][1]) < 40.0:
+                continue
+            out.append((x, y))
+        return out
+
+    def _route_from_auair_waypoints(self, d: Drone, xy: list[tuple[float, float]], start_alt: float) -> np.ndarray | None:
+        """Stitch remaining safe waypoints; A* replaces any segment that clips a hard cell."""
+        if len(xy) < 2:
+            return None
+        path: list[tuple[float, float]] = [xy[0]]
+        for a, b in zip(xy, xy[1:]):
+            field = self.riskmap.cost_field(self.weights_for(d))
+            clear, _ = self.riskmap.segment(a, b, field)
+            if clear:
+                if path[-1] != b:
+                    path.append(b)
+                continue
+            plan = self.plan_for(d, a, b)
+            if plan is None or len(plan.xy) < 2:
+                continue
+            for px, py in plan.xy[1:]:
+                pt = (float(px), float(py))
+                if path[-1] != pt:
+                    path.append(pt)
+        if len(path) < 2:
+            return None
+        return np.asarray(path, dtype=float)
+
+    def _new_drone_from_mission(
+        self,
+        mission: dict,
+        mission_type: str,
+        priority: str,
+        cruise_alt: float,
+        speed: float,
+        battery: float,
+        wear: float,
+        progress: float,
+    ) -> Drone | None:
+        xy = self._mission_xy(mission)
+        if len(xy) < 2:
+            return None
+        port = self.world.find(mission.get("port_name") or "") or self.world.ports[0]
+        end_lat, end_lon = self.world.frame.latlon(*xy[-1])
+        dest = Place(
+            f"auair-{mission.get('id', 'track')}",
+            f"AU-AIR {mission.get('session', 'track')[-8:]}",
+            "district",
+            end_lat,
+            end_lon,
+            xy[-1][0],
+            xy[-1][1],
+        )
+        did = f"D{next(self._ids):02d}"
+        d = Drone(
+            id=did,
+            mission_type=mission_type,
+            priority=priority,
+            origin=port,
+            destination=dest,
+            home=port,
+            cruise_alt=cruise_alt,
+            cruise_speed=speed,
+            battery=battery,
+            wear=wear,
+            x=xy[0][0],
+            y=xy[0][1],
+            alt=0.0,
+            created_at=self.now,
+        )
+        self._apply_health(d, self.health.register(did, wear, seed=self.rng.randrange(10_000)), announce=False)
+        poly = self._route_from_auair_waypoints(d, xy, 0.0)
+        if poly is None:
+            self.health.forget(did)
+            return None
+        route = self.build_route(d, poly, start_alt=0.0, speed=speed)
+        s0 = min(progress * route.length, max(0.0, route.length - 50.0))
+        alt0 = 0.0 if s0 <= 1.0 else float(route.alt(s0))
+        d.motion = Motion(route, s0, speed, alt0)
+        d.original = route
+        d.x, d.y = route.point(s0)
+        d.alt = alt0
+        d.heading = route.heading(s0)
+        d.announced = {"battery": self._battery_band(battery), "health": d.health_status, "rul": d.rul}
+        self._commit(d)
+        return d
+
     def seed_fleet(self) -> None:
         ports = self.world.ports
+        missions = self._load_auair_missions()
+        mission_i = 0
         for i, (kind, prio, alt, speed, battery, wear, progress) in enumerate(SEED_FLEET):
+            used_mission = False
+            if i in AUAIR_SEED_SLOTS and mission_i < len(missions):
+                made = self._new_drone_from_mission(
+                    missions[mission_i], kind, prio, alt, speed, battery, wear, progress
+                )
+                if made:
+                    used_mission = True
+                    mission_i += 1
+            if used_mission:
+                continue
             port = ports[i % len(ports)]
             for _ in range(8):
                 dest = self.world.random_destination(self.rng, (port.x, port.y), 4000.0, 10000.0, DEST_KINDS[kind])

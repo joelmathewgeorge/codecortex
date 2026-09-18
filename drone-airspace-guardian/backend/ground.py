@@ -1,10 +1,11 @@
 """
 Ground Risk Monitor: aerial cameras over busy Dubai roads, scored by YOLOv8n.
 
-Each monitor site sits on a real road (snapped to OSM motorway/trunk geometry) and replays
-one window of AU-AIR low-altitude traffic footage (ml/auair_frames, exported by
-ml/export_auair_frames.py). Every couple of seconds one site's next frame goes through the
-detector; the vehicle and pedestrian count sets that site's ground-risk level:
+Each monitor site sits on a real road (snapped to OSM motorway/trunk geometry). GM-1..GM-4
+replay AU-AIR low-altitude windows (ml/auair_frames); GM-5..GM-6 replay VisDrone stills
+(ml/vision_frames). Both datasets stay visible when both exports exist. Every couple of
+seconds one site's next frame goes through the detector; the vehicle and pedestrian count
+sets that site's ground-risk level:
 
     LOW  < 6  <=  MEDIUM  < 14  <=  HIGH  < 22  <=  VERY HIGH      (vehicles + 2 x people)
 
@@ -86,49 +87,89 @@ class Site:
             "height": f.get("height"),
             "truth": f.get("boxes", []),
             "detections": self.detections,
-            "telemetry": {"gps": f.get("gps"), "velocity": f.get("velocity"), "time": f.get("time")} if f.get("gps") else None,
+            "telemetry": (
+                {
+                    "gps": f.get("gps"),
+                    "velocity": f.get("velocity"),
+                    "time": f.get("time"),
+                    "imu": f.get("imu") or f.get("angular"),
+                }
+                if f.get("gps")
+                else None
+            ),
             "scoredBy": self.scored_by,
             "dataset": self.dataset,
             "updatedAt": round(self.updated_at, 1),
         }
 
 
-def _load_frame_sets() -> tuple[list[list[dict]], str, str]:
+def _stamp_auair(frames: list[dict], width: int, height: int) -> list[dict]:
+    out = []
+    for raw in frames:
+        f = dict(raw)
+        f["width"], f["height"] = width, height
+        f["media_dir"] = str(AUAIR_DIR)
+        boxes = []
+        for b in f.get("boxes") or []:
+            bb = dict(b)
+            bb["label"] = {"Human": "person", "Motorbike": "motor"}.get(bb.get("label", ""), bb.get("label", "").lower())
+            boxes.append(bb)
+        f["boxes"] = boxes
+        out.append(f)
+    return out
+
+
+def _load_auair_sets() -> list[list[dict]]:
     index = AUAIR_DIR / "index.json"
-    if index.exists():
+    if not index.exists():
+        return []
+    try:
         data = json.loads(index.read_text(encoding="utf-8"))
-        sets = sorted(data["sets"], key=lambda s: -s["mean_boxes"])
-        for s in sets:
-            for f in s["frames"]:
-                f["width"], f["height"] = data["width"], data["height"]
-                for b in f["boxes"]:
-                    b["label"] = {"Human": "person", "Motorbike": "motor"}.get(b["label"], b["label"].lower())
-        return [s["frames"] for s in sets], "/media/auair", "AU-AIR"
+    except (OSError, json.JSONDecodeError):
+        return []
+    sets = sorted(data.get("sets") or [], key=lambda s: -s.get("mean_boxes", 0))
+    width, height = data.get("width", 960), data.get("height", 540)
+    return [_stamp_auair(s.get("frames") or [], width, height) for s in sets if s.get("frames")]
+
+
+def _load_visdrone_frames() -> list[dict]:
     visdrone = ML_DIR / "vision_frames"
     truth_file = visdrone / "truth.json"
-    if visdrone.exists():
+    if not visdrone.exists():
+        return []
+    try:
         truth = json.loads(truth_file.read_text(encoding="utf-8")) if truth_file.exists() else {}
-        frames = []
-        for p in sorted(visdrone.glob("visdrone-*.jpg")):
-            try:
-                from PIL import Image
+    except (OSError, json.JSONDecodeError):
+        truth = {}
+    frames = []
+    for p in sorted(visdrone.glob("visdrone-*.jpg")):
+        try:
+            from PIL import Image
 
-                with Image.open(p) as im:
-                    w, h = im.size
-            except Exception:
-                w, h = 0, 0
-            frames.append({"file": p.name, "source": p.name, "boxes": truth.get(p.name, []), "width": w, "height": h})
-        if frames:
-            return [frames], "/media/visdrone", "VisDrone"
-    return [], "", ""
+            with Image.open(p) as im:
+                w, h = im.size
+        except Exception:
+            w, h = 0, 0
+        frames.append(
+            {
+                "file": p.name,
+                "source": p.name,
+                "boxes": truth.get(p.name, []),
+                "width": w,
+                "height": h,
+                "media_dir": str(visdrone),
+            }
+        )
+    return frames
 
 
 class GroundMonitor:
     def __init__(self, world, events) -> None:
         self.world = world
         self.events = events
-        sets, media, dataset = _load_frame_sets()
-        self.media_ready = bool(sets)
+        auair_sets = _load_auair_sets()
+        visdrone_frames = _load_visdrone_frames()
+        self.media_ready = bool(auair_sets or visdrone_frames)
         self.sites: list[Site] = []
         for i, (sid, name, (lat, lon), ref) in enumerate(SITES):
             x, y = world.frame.point(lat, lon)
@@ -140,7 +181,16 @@ class GroundMonitor:
                     if math.hypot(cloud[j, 0] - x, cloud[j, 1] - y) < 1500:
                         x, y = float(cloud[j, 0]), float(cloud[j, 1])
                         lat, lon = world.frame.latlon(x, y)
-            frames = sets[i % len(sets)] if sets else []
+            # GM-1..GM-4 replay AU-AIR windows; GM-5..GM-6 replay VisDrone stills.
+            # Either source may be missing without crashing the camera rail.
+            if i < 4 and auair_sets:
+                frames, media, dataset = auair_sets[i % len(auair_sets)], "/media/auair", "AU-AIR"
+            elif visdrone_frames:
+                frames, media, dataset = visdrone_frames, "/media/visdrone", "VisDrone"
+            elif auair_sets:
+                frames, media, dataset = auair_sets[i % len(auair_sets)], "/media/auair", "AU-AIR"
+            else:
+                frames, media, dataset = [], "", ""
             self.sites.append(
                 Site(sid, name, ref or "", lat, lon, x, y, SITE_RADIUS_M, frames, media, dataset, idx=(i * 7) % max(1, len(frames)))
             )
@@ -160,7 +210,12 @@ class GroundMonitor:
         return site, frame
 
     def frame_path(self, frame: dict) -> Path:
-        return (AUAIR_DIR if self.sites and self.sites[0].media.endswith("auair") else ML_DIR / "vision_frames") / frame["file"]
+        root = frame.get("media_dir")
+        if root:
+            return Path(root) / frame["file"]
+        if self.sites and self.sites[0].media.endswith("visdrone"):
+            return (ML_DIR / "vision_frames") / frame["file"]
+        return AUAIR_DIR / frame["file"]
 
     def apply(self, site: Site, frame: dict, detections: list[dict] | None, model_name: str, now: float) -> tuple[str, str] | None:
         """Score one frame. Returns (old level, new level) when the site's level changed."""
