@@ -33,7 +33,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from drones import Drone, create_default_drones
+from drones import Drone, create_default_drones, mark_proximity
+from health_bridge import warmup as warmup_ml
 from zones import add_zone, get_all_zones
 
 # ---------------------------------------------------------------------------
@@ -135,11 +136,12 @@ async def simulation_loop() -> None:
         # 1. Tick all drones
         for drone in drones:
             drone.tick()
+        mark_proximity(drones)
 
-        # 2. Build the WebSocket message
         message = {
             "type": "positions",
             "drones": [d.to_dict() for d in drones],
+            "zones": [z.to_dict() for z in get_all_zones()],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -165,6 +167,7 @@ async def startup():
         server. create_task() schedules it on the event loop without
         blocking the server from handling requests.
     """
+    warmup_ml()
     asyncio.create_task(simulation_loop())
 
 
@@ -188,6 +191,16 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
     connected_clients.add(websocket)
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "positions",
+                "drones": [d.to_dict() for d in drones],
+                "zones": [z.to_dict() for z in get_all_zones()],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    )
 
     try:
         # Keep the connection alive by reading (even though we don't use the data)
@@ -251,6 +264,12 @@ async def create_emergency(body: ZoneCreate):
         "type": "alert",
         "zone": zone.to_dict(),
         "affected_drones": affected,
+        "message": (
+            f"Airspace conflict — rerouting {len(affected)} drone(s)"
+            if affected
+            else "Emergency zone created — no drones in radius"
+        ),
+        "severity": "high",
     }
     await broadcast(alert)
 
@@ -264,6 +283,14 @@ async def create_emergency(body: ZoneCreate):
 # ---------------------------------------------------------------------------
 # Health check endpoint (bonus — useful for monitoring)
 # ---------------------------------------------------------------------------
+
+@app.get("/state")
+async def get_state():
+    return {
+        "drones": [d.to_dict() for d in drones],
+        "zones": [z.to_dict() for z in get_all_zones()],
+    }
+
 
 @app.get("/")
 async def root():

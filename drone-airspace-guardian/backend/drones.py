@@ -16,12 +16,15 @@ HOW THE SIMULATION WORKS:
 
 from __future__ import annotations
 
-import math
-import random
 from dataclasses import dataclass, field
 
 from geo_utils import bearing, haversine, offset_point
+from health_bridge import score_drone
+from missions import MISSIONS, load_mission_waypoints
 from zones import Zone, check_conflicts
+
+PROXIMITY_M = 100.0
+ALT_SEP_M = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,10 @@ class Drone:
     status: str = "en-route"
     mission: str = "Patrol"
     health: int = 100
+    wear: float = 0.15
+    affected: bool = False
     _original_waypoints: list[tuple[float, float]] = field(default_factory=list)
+    _reroute_waypoints: list[tuple[float, float]] = field(default_factory=list)
 
     def __post_init__(self):
         """Set initial position to the first waypoint."""
@@ -82,8 +88,11 @@ class Drone:
             "heading": round(hdg, 1),
             "speed": round(self.speed, 1),
             "status": self.status,
-            "health": self.health,
+            "health": int(round(self.health)),
             "mission": self.mission,
+            "affected": self.affected,
+            "path": [{"lat": lat, "lon": lon} for lat, lon in self._original_waypoints],
+            "reroutePath": [{"lat": lat, "lon": lon} for lat, lon in self._reroute_waypoints],
         }
 
     def tick(self) -> None:
@@ -113,6 +122,8 @@ class Drone:
                 if self.status == "rerouting":
                     self.waypoints = list(self._original_waypoints)
                     self.status = "en-route"
+                    self._reroute_waypoints = []
+                    self.affected = False
         else:
             # Move toward target by `speed` metres
             # t = fraction of the remaining distance to cover in this tick
@@ -120,12 +131,10 @@ class Drone:
             self.lat = self.lat + t * (target_lat - self.lat)
             self.lon = self.lon + t * (target_lon - self.lon)
 
-        # --- Placeholder health (Step 7) ---
-        # Random jitter around current health — simulates sensor noise
-        # Rohit's model will replace this with real predictions
-        self.health = max(0, min(100, self.health + random.randint(-5, 5)))
+        scored = score_drone(self.id, wear=self.wear)
+        if scored is not None:
+            self.health = round(0.82 * self.health + 0.18 * scored, 1)
 
-        # --- Conflict check (Steps 5 & 6) ---
         self._check_and_reroute()
 
     def _check_and_reroute(self) -> None:
@@ -144,40 +153,28 @@ class Drone:
         This creates a simple "dodge to the side" behavior.
         """
         next_wp = self.waypoints[self.current_idx]
-        conflicts = check_conflicts(next_wp[0], next_wp[1])
+        conflicts = check_conflicts(self.lat, self.lon) or check_conflicts(next_wp[0], next_wp[1])
 
-        if not conflicts and self.status == "rerouting":
-            # No more conflicts — check if we should resume
-            # (status gets reset when we loop back in tick())
-            pass
+        self.affected = bool(conflicts) or self.status == "rerouting"
 
         for zone in conflicts:
             if self.status == "rerouting":
-                # Already rerouting — don't stack reroutes
                 continue
 
-            # Compute bearing from zone center to the conflicting waypoint
-            brng = bearing(zone.lat, zone.lon, next_wp[0], next_wp[1])
-
-            # Rotate 90° to get the perpendicular direction
+            brng = bearing(zone.lat, zone.lon, self.lat, self.lon)
             perp_bearing = (brng + 90) % 360
-
-            # Place detour point just outside the zone (radius + 100m buffer)
             detour_lat, detour_lon = offset_point(
                 zone.lat, zone.lon, perp_bearing, zone.radius + 100
             )
-
-            # Insert the detour waypoint BEFORE the conflicting waypoint
             self.waypoints.insert(self.current_idx, (detour_lat, detour_lon))
+            self._reroute_waypoints = [(self.lat, self.lon), (detour_lat, detour_lon), next_wp]
             self.status = "rerouting"
+            self.affected = True
 
     def force_reroute_check(self) -> list[Zone]:
-        """
-        Force an immediate conflict check (used by POST /emergency).
-        Returns list of zones this drone conflicts with.
-        """
+        """Immediate conflict check for POST /emergency (current position + next waypoint)."""
         next_wp = self.waypoints[self.current_idx]
-        conflicts = check_conflicts(next_wp[0], next_wp[1])
+        conflicts = check_conflicts(self.lat, self.lon) or check_conflicts(next_wp[0], next_wp[1])
         if conflicts:
             self._check_and_reroute()
         return conflicts
@@ -187,76 +184,42 @@ class Drone:
 # Create the 5 hardcoded drones
 # ---------------------------------------------------------------------------
 
+FALLBACK_PATHS = [
+    [(12.9716, 77.5946), (12.9780, 77.5900), (12.9850, 77.5850), (12.9716, 77.5946)],
+    [(12.9352, 77.6245), (12.9400, 77.6150), (12.9450, 77.6050), (12.9352, 77.6245)],
+    [(12.9698, 77.7500), (12.9650, 77.7400), (12.9600, 77.7300), (12.9698, 77.7500)],
+    [(12.9250, 77.5470), (12.9300, 77.5550), (12.9370, 77.5620), (12.9250, 77.5470)],
+    [(13.0358, 77.5970), (13.0300, 77.5900), (13.0250, 77.5830), (13.0358, 77.5970)],
+]
+
+
+def mark_proximity(drones: list[Drone]) -> None:
+    """Pairwise drone-to-drone conflict: <100 m and <30 m altitude."""
+    for i, a in enumerate(drones):
+        for b in drones[i + 1 :]:
+            if haversine(a.lat, a.lon, b.lat, b.lon) < PROXIMITY_M and abs(a.alt - b.alt) < ALT_SEP_M:
+                a.affected = True
+                b.affected = True
+
+
 def create_default_drones() -> list[Drone]:
     """
-    Create 5 drones with realistic paths around Bangalore, India.
-
-    WHY BANGALORE?
-        It's a real city with real coordinates — makes it easy to
-        visualize on a map.  The paths are ~2-5 km long, which is
-        realistic for urban delivery drones.
-
-    Each drone has 3-4 waypoints forming a straight-ish line path.
+    Five drones around Bangalore. Paths prefer reshaped OpenSky tracks from
+    ml/trajectories.json so the missions have real ADS-B curvature; if that
+    file is missing we keep Pranav's original hardcoded legs.
     """
-    return [
-        Drone(
-            id="drone-1",
-            waypoints=[
-                (12.9716, 77.5946),   # MG Road
-                (12.9780, 77.5900),   # North toward Cubbon Park
-                (12.9850, 77.5850),   # Further north
-                (12.9716, 77.5946),   # Loop back to start
-            ],
-            speed=12.0,
-            mission="Delivery A — Medical Supplies",
-            alt=120.0,
-        ),
-        Drone(
-            id="drone-2",
-            waypoints=[
-                (12.9352, 77.6245),   # Koramangala
-                (12.9400, 77.6150),   # West toward BTM
-                (12.9450, 77.6050),   # Further west
-                (12.9352, 77.6245),   # Loop back
-            ],
-            speed=14.0,
-            mission="Delivery B — Food Package",
-            alt=80.0,
-        ),
-        Drone(
-            id="drone-3",
-            waypoints=[
-                (12.9698, 77.7500),   # Whitefield
-                (12.9650, 77.7400),   # Southwest
-                (12.9600, 77.7300),   # Further southwest
-                (12.9698, 77.7500),   # Loop back
-            ],
-            speed=16.0,
-            mission="Survey — Traffic Monitoring",
-            alt=150.0,
-        ),
-        Drone(
-            id="drone-4",
-            waypoints=[
-                (12.9250, 77.5470),   # Basavanagudi
-                (12.9300, 77.5550),   # Northeast
-                (12.9370, 77.5620),   # Further northeast
-                (12.9250, 77.5470),   # Loop back
-            ],
-            speed=10.0,
-            mission="Delivery C — Electronics",
-            alt=90.0,
-        ),
-        Drone(
-            id="drone-5",
-            waypoints=[
-                (13.0358, 77.5970),   # Yelahanka (north Bangalore)
-                (13.0300, 77.5900),   # South
-                (13.0250, 77.5830),   # Further south
-                (13.0358, 77.5970),   # Loop back
-            ],
-            speed=18.0,
-            mission="Emergency — Organ Transport",
-            alt=200.0,
-        ),
-    ]
+    ml_paths = load_mission_waypoints()
+    paths = ml_paths if ml_paths else FALLBACK_PATHS
+    fleet = []
+    for i, (drone_id, mission, speed, alt, wear) in enumerate(MISSIONS):
+        fleet.append(
+            Drone(
+                id=drone_id,
+                waypoints=list(paths[i]),
+                speed=speed,
+                mission=mission,
+                alt=alt,
+                wear=wear,
+            )
+        )
+    return fleet
