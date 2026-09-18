@@ -24,11 +24,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Model training artifacts (keep the final model)
 *.log
 
-# Large data files (optional - keep train_FD001.txt for now)
-# train_FD001.txt
+# Raw datasets are not committed; point CMAPSS_DIR / OPENSKY_CSV at local copies.
+*_FD00*.txt
+opensky_trajectories.csv
 
-# Test outputs
+# Sanity-check chart is referenced by the README, so it is kept.
 *.png
+!health_degradation.png

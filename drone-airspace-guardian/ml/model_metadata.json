@@ -1,0 +1,57 @@
+{
+  "trained_at": "2026-09-18 13:08:04",
+  "dataset": "NASA C-MAPSS FD001-FD004 (real run-to-failure data)",
+  "training_rows": 160359,
+  "training_engines": 709,
+  "test_engines": 707,
+  "rul_cap": 125,
+  "n_features": 145,
+  "selected_model": "HistGradientBoosting",
+  "best_forest_params": {
+    "min_samples_leaf": 10,
+    "max_features": 0.3,
+    "max_depth": null
+  },
+  "grouped_cv_rmse": 16.507697698131366,
+  "held_out_results": {
+    "RandomForest": {
+      "rmse": 15.616219472442678,
+      "mae": 11.525291309343917,
+      "r2": 0.8623200565917892,
+      "phm08": 3496.8257076971563,
+      "rmse_uncapped": 25.22745838338839,
+      "size_mb": 86.69
+    },
+    "HistGradientBoosting": {
+      "rmse": 14.775129252592873,
+      "mae": 10.503741916223676,
+      "r2": 0.8767515550646139,
+      "phm08": 3095.310407742724,
+      "rmse_uncapped": 24.265961256016734,
+      "size_mb": 2.13
+    }
+  },
+  "per_subset": {
+    "FD001": {
+      "engines": 100,
+      "rmse": 12.671754050322972,
+      "mae": 8.92127941258889
+    },
+    "FD002": {
+      "engines": 259,
+      "rmse": 14.956927199953848,
+      "mae": 11.08796087877416
+    },
+    "FD003": {
+      "engines": 100,
+      "rmse": 12.531574390196125,
+      "mae": 8.918402474665536
+    },
+    "FD004": {
+      "engines": 248,
+      "rmse": 16.144392142092833,
+      "mae": 11.170949509847537
+    }
+  },
+  "evaluation_note": "Metrics come from NASA's separate test files scored against the supplied ground-truth RUL. Engines are split, never rows, so no engine appears in both training and evaluation."
+}
