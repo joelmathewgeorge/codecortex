@@ -1,0 +1,579 @@
+{
+  "source": "OpenStreetMap via Nominatim (nominatim.openstreetmap.org), fetched 2026-09-18",
+  "license": "ODbL 1.0 -- (c) OpenStreetMap contributors",
+  "places": [
+    {
+      "category": "airport",
+      "queryName": "Dubai International Airport",
+      "name": "مطار دبي الدولي",
+      "lat": 25.2515424,
+      "lon": 55.3666519,
+      "boundingbox": [
+        25.2305938,
+        25.2725283,
+        55.3370289,
+        55.4033728
+      ],
+      "osmType": "way",
+      "class": "aeroway",
+      "type": "aerodrome",
+      "englishName": "Dubai International Airport (DXB)"
+    },
+    {
+      "category": "airport",
+      "queryName": "Al Maktoum International Airport",
+      "name": "مطار آل مكتوم الدولي",
+      "lat": 24.9091455,
+      "lon": 55.171775,
+      "boundingbox": [
+        24.8592332,
+        24.9593464,
+        55.1210395,
+        55.221826
+      ],
+      "osmType": "way",
+      "class": "aeroway",
+      "type": "aerodrome",
+      "englishName": "Al Maktoum International Airport (DWC)"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Rashid Hospital",
+      "name": "Rashid hospital",
+      "lat": 25.225707,
+      "lon": 55.3771142,
+      "boundingbox": [
+        25.225657,
+        25.225757,
+        55.3770642,
+        55.3771642
+      ],
+      "osmType": "node",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "Rashid Hospital"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Dubai Hospital, Al Baraha",
+      "name": "مستشفى دبي",
+      "lat": 25.2848034,
+      "lon": 55.3215493,
+      "boundingbox": [
+        25.2842348,
+        25.2853714,
+        55.3208744,
+        55.3222243
+      ],
+      "osmType": "way",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "Dubai Hospital"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Kuwait Hospital Dubai",
+      "name": "مستشفى الكويت",
+      "lat": 25.2824105,
+      "lon": 55.3188547,
+      "boundingbox": [
+        25.2806477,
+        25.284325,
+        55.3169105,
+        55.3208782
+      ],
+      "osmType": "way",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "Kuwait Hospital"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Mediclinic City Hospital",
+      "name": "ميديكلينيك مستشفى المدينة",
+      "lat": 25.2303746,
+      "lon": 55.3227651,
+      "boundingbox": [
+        25.2300591,
+        25.2317675,
+        55.3220583,
+        55.3234644
+      ],
+      "osmType": "relation",
+      "class": "building",
+      "type": "hospital",
+      "englishName": "Mediclinic City Hospital"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Saudi German Hospital Dubai",
+      "name": "المستشفى السعودي الألماني",
+      "lat": 25.0969334,
+      "lon": 55.1838119,
+      "boundingbox": [
+        25.0965822,
+        25.0977571,
+        55.1832475,
+        55.1843905
+      ],
+      "osmType": "way",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "Saudi German Hospital"
+    },
+    {
+      "category": "hospital",
+      "queryName": "Zulekha Hospital Al Nahda Dubai",
+      "name": "Zulekha Hospital",
+      "lat": 25.2913986,
+      "lon": 55.3840947,
+      "boundingbox": [
+        25.2910773,
+        25.2917199,
+        55.3837919,
+        55.3843974
+      ],
+      "osmType": "way",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "Zulekha Hospital"
+    },
+    {
+      "category": "government",
+      "queryName": "Dubai Police General Headquarters",
+      "name": "Dubai Police General Headquarters",
+      "lat": 25.2793498,
+      "lon": 55.3574426,
+      "boundingbox": [
+        25.2792579,
+        25.2794359,
+        55.3573302,
+        55.3575648
+      ],
+      "osmType": "way",
+      "class": "building",
+      "type": "yes",
+      "englishName": "Dubai Police General Headquarters"
+    },
+    {
+      "category": "stadium",
+      "queryName": "Dubai International Cricket Stadium",
+      "name": "استاد دبي الدولي للكريكيت",
+      "lat": 25.0467384,
+      "lon": 55.219007,
+      "boundingbox": [
+        25.0457809,
+        25.0477017,
+        55.217947,
+        55.220067
+      ],
+      "osmType": "way",
+      "class": "leisure",
+      "type": "stadium",
+      "englishName": "Dubai International Cricket Stadium"
+    },
+    {
+      "category": "stadium",
+      "queryName": "Al Maktoum Stadium Dubai",
+      "name": "ستاد اّل مكتوم",
+      "lat": 25.2398092,
+      "lon": 55.3128148,
+      "boundingbox": [
+        25.2391449,
+        25.2406836,
+        55.3120426,
+        55.3135899
+      ],
+      "osmType": "way",
+      "class": "leisure",
+      "type": "stadium",
+      "englishName": "Al Maktoum Stadium"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Burj Khalifa",
+      "name": "برج خليفة",
+      "lat": 25.1970336,
+      "lon": 55.2741329,
+      "boundingbox": [
+        25.1963681,
+        25.1977023,
+        55.2734274,
+        55.2749989
+      ],
+      "osmType": "way",
+      "class": "tourism",
+      "type": "attraction",
+      "englishName": "Burj Khalifa"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Burj Al Arab",
+      "name": "برج العرب جميرا",
+      "lat": 25.1413271,
+      "lon": 55.1853967,
+      "boundingbox": [
+        25.1408904,
+        25.1416843,
+        55.1848041,
+        55.1857685
+      ],
+      "osmType": "way",
+      "class": "tourism",
+      "type": "hotel",
+      "englishName": "Burj Al Arab"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Dubai Marina Mall",
+      "name": "دبي مارينا مول",
+      "lat": 25.0766362,
+      "lon": 55.1402187,
+      "boundingbox": [
+        25.0755563,
+        25.077749,
+        55.1392912,
+        55.1411316
+      ],
+      "osmType": "way",
+      "class": "shop",
+      "type": "mall",
+      "englishName": "Dubai Marina"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Mall of the Emirates",
+      "name": "مول الإمارات",
+      "lat": 25.1179818,
+      "lon": 55.2003754,
+      "boundingbox": [
+        25.1159183,
+        25.1199629,
+        55.1967176,
+        55.2043044
+      ],
+      "osmType": "way",
+      "class": "shop",
+      "type": "mall",
+      "englishName": "Mall of the Emirates"
+    },
+    {
+      "category": "hospital",
+      "queryName": "American Hospital Oud Metha Dubai",
+      "name": "المستشفى الأمريكي",
+      "lat": 25.2355738,
+      "lon": 55.3130763,
+      "boundingbox": [
+        25.2347006,
+        25.2363945,
+        55.3117604,
+        55.3144013
+      ],
+      "osmType": "way",
+      "class": "amenity",
+      "type": "hospital",
+      "englishName": "American Hospital Dubai"
+    },
+    {
+      "category": "government",
+      "queryName": "Dubai Municipality",
+      "name": "بلدية دبي",
+      "lat": 25.2645257,
+      "lon": 55.3117283,
+      "boundingbox": [
+        25.2641528,
+        25.2648987,
+        55.3113217,
+        55.312135
+      ],
+      "osmType": "way",
+      "class": "office",
+      "type": "government",
+      "englishName": "Dubai Municipality"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Deira, Dubai",
+      "name": "ديرة",
+      "lat": 25.2727936,
+      "lon": 55.305334,
+      "boundingbox": [
+        25.2327936,
+        25.3127936,
+        55.265334,
+        55.345334
+      ],
+      "osmType": "node",
+      "class": "place",
+      "type": "town",
+      "englishName": "Deira"
+    },
+    {
+      "category": "landmark",
+      "queryName": "Jumeirah Beach, Dubai",
+      "name": "شاطئ الجميرة",
+      "lat": 25.1850059,
+      "lon": 55.223492,
+      "boundingbox": [
+        25.1751367,
+        25.1944588,
+        55.2163957,
+        55.2319536
+      ],
+      "osmType": "way",
+      "class": "natural",
+      "type": "beach",
+      "englishName": "Jumeirah Beach"
+    }
+  ],
+  "palmJumeirahOutline": [
+    {
+      "lon": 55.1080724,
+      "lat": 25.11461
+    },
+    {
+      "lon": 55.1083767,
+      "lat": 25.1109464
+    },
+    {
+      "lon": 55.1091358,
+      "lat": 25.1078685
+    },
+    {
+      "lon": 55.1105986,
+      "lat": 25.1049012
+    },
+    {
+      "lon": 55.1136392,
+      "lat": 25.1010783
+    },
+    {
+      "lon": 55.1162105,
+      "lat": 25.0991136
+    },
+    {
+      "lon": 55.1198316,
+      "lat": 25.0975842
+    },
+    {
+      "lon": 55.1239076,
+      "lat": 25.0966879
+    },
+    {
+      "lon": 55.1278236,
+      "lat": 25.0966381
+    },
+    {
+      "lon": 55.1310848,
+      "lat": 25.0969591
+    },
+    {
+      "lon": 55.1348489,
+      "lat": 25.097802
+    },
+    {
+      "lon": 55.1382994,
+      "lat": 25.0995564
+    },
+    {
+      "lon": 55.1431489,
+      "lat": 25.104725
+    },
+    {
+      "lon": 55.1447582,
+      "lat": 25.1036175
+    },
+    {
+      "lon": 55.1460814,
+      "lat": 25.1020112
+    },
+    {
+      "lon": 55.1473385,
+      "lat": 25.1006674
+    },
+    {
+      "lon": 55.1486527,
+      "lat": 25.1005931
+    },
+    {
+      "lon": 55.1505947,
+      "lat": 25.1012995
+    },
+    {
+      "lon": 55.1517534,
+      "lat": 25.1026022
+    },
+    {
+      "lon": 55.1526643,
+      "lat": 25.101932
+    },
+    {
+      "lon": 55.1536045,
+      "lat": 25.1012402
+    },
+    {
+      "lon": 55.1537285,
+      "lat": 25.1011426
+    },
+    {
+      "lon": 55.1538849,
+      "lat": 25.1010234
+    },
+    {
+      "lon": 55.1541669,
+      "lat": 25.1008058
+    },
+    {
+      "lon": 55.1546391,
+      "lat": 25.1004413
+    },
+    {
+      "lon": 55.1549749,
+      "lat": 25.1001821
+    },
+    {
+      "lon": 55.15612,
+      "lat": 25.0992638
+    },
+    {
+      "lon": 55.1569398,
+      "lat": 25.1000647
+    },
+    {
+      "lon": 55.1581722,
+      "lat": 25.1012962
+    },
+    {
+      "lon": 55.1571446,
+      "lat": 25.1021454
+    },
+    {
+      "lon": 55.1564154,
+      "lat": 25.1027462
+    },
+    {
+      "lon": 55.1556798,
+      "lat": 25.1033222
+    },
+    {
+      "lon": 55.1553063,
+      "lat": 25.1035549
+    },
+    {
+      "lon": 55.1549117,
+      "lat": 25.1038682
+    },
+    {
+      "lon": 55.1551524,
+      "lat": 25.1063516
+    },
+    {
+      "lon": 55.156801,
+      "lat": 25.1093716
+    },
+    {
+      "lon": 55.1627225,
+      "lat": 25.1158031
+    },
+    {
+      "lon": 55.159169,
+      "lat": 25.1187157
+    },
+    {
+      "lon": 55.1549027,
+      "lat": 25.1204614
+    },
+    {
+      "lon": 55.1551369,
+      "lat": 25.1231253
+    },
+    {
+      "lon": 55.1553025,
+      "lat": 25.1252467
+    },
+    {
+      "lon": 55.1551906,
+      "lat": 25.127105
+    },
+    {
+      "lon": 55.1549499,
+      "lat": 25.1290182
+    },
+    {
+      "lon": 55.1543617,
+      "lat": 25.1311392
+    },
+    {
+      "lon": 55.1534858,
+      "lat": 25.1333695
+    },
+    {
+      "lon": 55.1519651,
+      "lat": 25.1356504
+    },
+    {
+      "lon": 55.1493332,
+      "lat": 25.1382469
+    },
+    {
+      "lon": 55.1464745,
+      "lat": 25.1400483
+    },
+    {
+      "lon": 55.1430909,
+      "lat": 25.1412631
+    },
+    {
+      "lon": 55.1399959,
+      "lat": 25.141793
+    },
+    {
+      "lon": 55.1363163,
+      "lat": 25.142004
+    },
+    {
+      "lon": 55.1331728,
+      "lat": 25.1417839
+    },
+    {
+      "lon": 55.1294947,
+      "lat": 25.1409836
+    },
+    {
+      "lon": 55.1270467,
+      "lat": 25.140077
+    },
+    {
+      "lon": 55.1223302,
+      "lat": 25.1377874
+    },
+    {
+      "lon": 55.1183587,
+      "lat": 25.1348662
+    },
+    {
+      "lon": 55.1151613,
+      "lat": 25.1316207
+    },
+    {
+      "lon": 55.1128854,
+      "lat": 25.128854
+    },
+    {
+      "lon": 55.1109673,
+      "lat": 25.1257195
+    },
+    {
+      "lon": 55.1090524,
+      "lat": 25.121039
+    },
+    {
+      "lon": 55.1082457,
+      "lat": 25.1174808
+    },
+    {
+      "lon": 55.1080724,
+      "lat": 25.11461
+    }
+  ]
+}

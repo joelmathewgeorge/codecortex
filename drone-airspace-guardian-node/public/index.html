@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Drone Airspace Guardian -- Dubai</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🚁 Drone Airspace Guardian</h1>
+    <span id="status-indicator">🟢 SYSTEM ONLINE</span>
+  </header>
+
+  <main>
+    <section class="map-panel">
+      <div id="map"></div>
+      <div class="controls">
+        <button id="add-drone-btn">➕ Add Drone</button>
+        <button id="real-flight-btn">🛰️ Spawn Real Flight (OpenSky)</button>
+        <button id="emergency-btn" class="emergency">🚨 Trigger Emergency</button>
+      </div>
+      <p class="legend">
+        <span class="dot normal"></span> normal
+        <span class="dot high"></span> high
+        <span class="dot critical"></span> critical / conflict
+        <span class="zone-swatch"></span> real no-fly zone
+        <span class="hospital-swatch"></span> real hospital
+        <span class="ground-swatch"></span> ground monitoring zone (VisDrone)
+      </p>
+    </section>
+
+    <aside class="dashboard">
+      <h2>Airspace Status</h2>
+      <ul id="stats"></ul>
+
+      <h2>Hospitals (real, emergency drone destinations)</h2>
+      <ul id="hospitals"></ul>
+
+      <h2>Ground Monitoring (real VisDrone scenes)</h2>
+      <ul id="ground-zones"></ul>
+
+      <h2>Live Aerial Detection Feed (real AU-AIR telemetry)</h2>
+      <ul id="detection-feed"></ul>
+
+      <h2>Data Sources</h2>
+      <ul id="data-sources"></ul>
+
+      <h2>Recent Events</h2>
+      <ul id="event-log"></ul>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>

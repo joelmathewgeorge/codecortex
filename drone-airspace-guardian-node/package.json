@@ -1,0 +1,15 @@
+{
+  "name": "drone-airspace-guardian",
+  "version": "1.0.0",
+  "description": "Hackathon prototype: real-time simulated drone airspace with conflict detection, dynamic geofencing, A* rerouting and emergency priority corridors (UTM concept).",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pngjs": "^7.0.0",
+    "ws": "^8.17.0"
+  }
+}

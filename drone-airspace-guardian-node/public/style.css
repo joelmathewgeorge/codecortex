@@ -1,0 +1,169 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #05070d;
+  color: #e6edf3;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  background: #0b1220;
+  border-bottom: 1px solid #1c2433;
+}
+header h1 { font-size: 18px; margin: 0; }
+#status-indicator { color: #3ddc84; font-size: 13px; }
+
+main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px;
+}
+
+.map-panel { flex: 1; min-width: 320px; }
+
+#map {
+  width: 100%;
+  max-width: 800px;
+  aspect-ratio: 1 / 1;
+  background: #0b1220;
+  border: 1px solid #1c2433;
+  border-radius: 8px;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: #131a29;
+  color: #e6edf3;
+}
+.leaflet-container a.leaflet-popup-close-button { color: #9fb2c8; }
+
+/* Labels sit on the light CartoDB basemap, so dark text with a light
+   halo reads clearly regardless of what's underneath. */
+.drone-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #14202e;
+  font-weight: 600;
+  font-size: 10px;
+  white-space: nowrap;
+  text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
+}
+.hospital-icon {
+  background: #2a7de0;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+  border: 1.5px solid #fff;
+}
+
+.controls { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #2a3245;
+  background: #131a29;
+  color: #e6edf3;
+  cursor: pointer;
+  font-size: 13px;
+}
+button.emergency { background: #3a1010; border-color: #ff4d4d; color: #ffb3b3; }
+button:hover { filter: brightness(1.25); }
+
+.legend {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #9fb2c8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 3px;
+}
+.dot.normal { background: #3ddc84; }
+.dot.high { background: #ffb020; }
+.dot.critical { background: #ff4d4d; }
+.zone-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 9px;
+  background: rgba(255, 60, 60, 0.35);
+  border: 1px solid #ff4d4d;
+  margin-right: 3px;
+}
+.ground-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px dashed #ffb020;
+  margin-right: 3px;
+}
+.hospital-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #2a7de0;
+  margin-right: 3px;
+}
+
+.dashboard {
+  width: 300px;
+  background: #0b1220;
+  border: 1px solid #1c2433;
+  border-radius: 8px;
+  padding: 16px;
+  height: fit-content;
+}
+.dashboard h2 {
+  font-size: 14px;
+  margin: 0 0 8px;
+  color: #9fb2c8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dashboard ul {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  font-size: 13px;
+}
+.dashboard ul li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #151c2b;
+}
+
+#event-log { max-height: 420px; overflow-y: auto; }
+#event-log li {
+  display: block;
+  font-size: 11px;
+  padding: 5px 0;
+  border-bottom: 1px solid #151c2b;
+  color: #9fb2c8;
+}
+#event-log li.critical,
+#event-log li.alert { color: #ff8080; }
+#event-log li.warning { color: #ffcc66; }
+#event-log li.success { color: #6be08a; }
