@@ -2,6 +2,8 @@
 
 Downtown Dubai MVP: five simulated delivery drones on a live map, operator no-fly rings, an inbound-helicopter emergency that reroutes traffic in place, C-MAPSS health scores, and a YOLOv8n camera dock on cycling aerial frames.
 
+The public GitHub landing page is the repo-root [README.md](../README.md). This file is the operational runbook (ports, commands, API table). Deep restore notes: [context.md](context.md).
+
 Team split by folder. Stay in your area unless a change is coordinated.
 
 | Path | Owner | GitHub |
@@ -10,17 +12,11 @@ Team split by folder. Stay in your area unless a change is coordinated.
 | `frontend/` | Joel | [@joelmathewgeorge](https://github.com/joelmathewgeorge) |
 | `ml/` | Rohit | [@vrrroro](https://github.com/vrrroro) |
 
-Ownership is recorded in the repo-root [`.github/CODEOWNERS`](../.github/CODEOWNERS):
-
-```
-/drone-airspace-guardian/backend/  @pranav3086
-/drone-airspace-guardian/frontend/ @joelmathewgeorge
-/drone-airspace-guardian/ml/       @vrrroro
-```
+Ownership is recorded in the repo-root [`.github/CODEOWNERS`](../.github/CODEOWNERS): Rohit = ML (`@vrrroro`), Pranav = backend (`@pranav3086`), Joel = frontend (`@joelmathewgeorge`).
 
 ## Pitch
 
-An operator watches Downtown Dubai (25.1972 N, 55.2744 E). Five missions loop on paths shaped from real OpenSky ADS-B tracks, rescaled into a ~4 km box around Burj Khalifa. Drawing a no-fly ring, or clicking **Helicopter inbound**, marks affected drones, redraws their routes, and raises the conflict banner. Health bars come from the trained C-MAPSS RUL model on stand-in telemetry. The camera panel runs YOLOv8n on a rotating set of VisDrone / Dubai stills served from the backend, not a live UAV feed.
+An operator watches Downtown Dubai (25.1972 N, 55.2744 E). Five missions loop on paths shaped from real OpenSky ADS-B tracks, fitted into a Downtown box around Burj Khalifa (`SPAN_DEG = 0.024` in `missions.py`). Drawing a no-fly ring, or clicking **Helicopter inbound**, marks affected drones, redraws their routes, and raises the conflict banner. A second helicopter click replaces the emergency ring instead of stacking another. Health bars come from the trained C-MAPSS RUL model on stand-in telemetry. The camera panel runs YOLOv8n on a rotating set of VisDrone / Dubai stills served from the backend, not a live UAV feed.
 
 ## Architecture
 
@@ -33,7 +29,7 @@ An operator watches Downtown Dubai (25.1972 N, 55.2744 E). Five missions loop on
      v
   FastAPI  (uvicorn, port 8000)
      |-- simulation_loop (~1 s) --> drones.py lerp / reroute / proximity
-     |-- zones.py (in-memory circles)
+     |-- zones.py (in-memory circles; emergencies replace, operators cap at 4)
      |-- health_bridge.py --> ml/rul_model.joblib
      |-- vision_bridge.py --> ml/weights/yolov8n_airspace.pt
      '-- StaticFiles /media --> ml/vision_frames/
@@ -62,16 +58,18 @@ Ports below match the code: `uvicorn` defaults to **8000**; `frontend/lib/config
 
 Use one Python environment for the API. Install `backend/requirements.txt` for the server and health model, then `ml/requirements.txt` if you want the camera HUD (`ultralytics`). Without YOLO, the map and reroutes still run; `vision_bridge` logs that the detector is unavailable.
 
+`--reload` watches Python files and restarts uvicorn on save. Use it while developing; drop the flag for a stable judge demo.
+
 ### Backend (FastAPI, 8000)
 
-```bash
-cd drone-airspace-guardian/backend
+```powershell
+cd drone-airspace-guardian\backend
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 python -m pip install -r requirements.txt
-python -m pip install -r ../ml/requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python -m pip install -r ..\ml\requirements.txt
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Sanity check without the UI:
@@ -84,8 +82,8 @@ You should see a JSON `positions` message about once a second with `"city": "dub
 
 ### Frontend (Next.js, 3000)
 
-```bash
-cd drone-airspace-guardian/frontend
+```powershell
+cd drone-airspace-guardian\frontend
 npm install
 npm run dev
 ```
@@ -119,14 +117,15 @@ All of these are defined in `backend/main.py`. Zone bodies are `{ "lat": float, 
 
 `POST /reset` response: `{ "status": "reset", "drones": 5, "zones": 0 }`.
 
-## 60–90 second demo
+## 90-second demo
 
 1. **0:00 — board.** Open http://localhost:3000. Confirm **Live**, five tracks, Downtown Dubai tiles, health bars in the left panel, camera dock on the right.
 2. **0:15 — traffic.** Let the fleet move. Missions are Marina clinic, Palm grocery, Sheikh Zayed survey, DIFC parts, and organ to Emirates Hospital.
 3. **0:25 — no-fly.** Click **Draw no-fly**, then click the map. A 450 m operator ring appears; drones that intersect it mark **rerouting** and the banner updates.
-4. **0:40 — helicopter.** Click **Helicopter inbound**. The API drops a 900 m emergency on the Dubai center, immediately checks conflicts, and the banner reports how many drones are affected. Paths redraw around the ring.
+4. **0:40 — helicopter.** Click **Helicopter inbound**. The API drops a 900 m emergency on the Dubai center, immediately checks conflicts, and the banner reports how many drones are affected. Clicking it again replaces that ring (single emergency, not stacked fills).
 5. **1:00 — camera.** The dock cycles stills with YOLOv8n boxes (cars, people, buses, and related classes). This is ground-activity context, not drone-vs-drone detection.
-6. **1:15 — reset.** Click **Reset demo**. Zones clear, the original five missions restore, the banner drops.
+6. **1:15 — health.** Watch the left **Fleet** panel: C-MAPSS RUL scores walk down on stand-in traces.
+7. **1:25 — reset.** Click **Reset demo**. Zones clear, the original five missions restore, the banner drops.
 
 Escape cancels an armed draw. If the feed shows **Disconnected**, the UI is up but FastAPI is not reachable on port 8000.
 
@@ -150,7 +149,7 @@ Health training and checks: `ml/train_model.py`, `ml/sanity_check.py` (see `ml/R
 - OpenSky paths are airliner ADS-B, then scaled and offset into Downtown Dubai. They are not Dubai drone flights.
 - Health is a turbofan RUL model driven by synthetic C-MAPSS-like traces. Real airframe telemetry would need a new training set.
 - The camera dock is not a live gimbal. It classifies a loop of stills; `/media` is empty if `ml/vision_frames/` is missing locally.
-- VisDrone is street-level aerial traffic, not Dubai airspace and not drone detection.
+- VisDrone is street-level aerial traffic, not Dubai airspace and not drone detection. Fine-tune mAP50 is **0.2863** — modest, not production detection.
 - Zones and fleet state are in-memory and vanish on process restart.
 - Proximity is a geometric check: horizontal distance under 100 m and altitude separation under 30 m.
 - `NEXT_PUBLIC_DATA_MODE=mock` is a frontend-only fake and does not hit FastAPI.

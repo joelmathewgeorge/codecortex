@@ -1,4 +1,10 @@
 # Folder ownership for Drone Airspace Guardian.
+# GitHub usernames come from this file only — do not invent handles.
+#
+# Rohit  — ML       (@vrrroro)
+# Pranav — backend  (@pranav3086)
+# Joel   — frontend (@joelmathewgeorge)
+
 /drone-airspace-guardian/backend/  @pranav3086
 /drone-airspace-guardian/frontend/ @joelmathewgeorge
 /drone-airspace-guardian/ml/       @vrrroro
