@@ -55,3 +55,11 @@ drone-airspace-guardian/ml/runs/
 *.pt
 !drone-airspace-guardian/ml/weights/
 !drone-airspace-guardian/ml/weights/*.pt
+
+# AU-AIR camera frames are exported locally (its licence asks for links, not rebundling);
+# the OpenStreetMap response cache is re-fetchable by ml/build_airspace.py.
+drone-airspace-guardian/ml/auair_frames/
+drone-airspace-guardian/ml/.cache/
+
+# Ultralytics writes val runs wherever it is launched from.
+/runs/
