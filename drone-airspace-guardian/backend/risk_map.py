@@ -5,7 +5,7 @@ Static layers are built once from the real Dubai data:
     hard_static     restricted-airspace cores (cost = infinity)
     buffer_static   soft rings around them (5 or 25 per metre, by category)
     ceiling         max altitude; lower inside airport buffers
-    ground_static   empty water / urban land / motorway & trunk roads / crowd hotspots
+    ground_static   OSM water / urban land / roads / crowd (soft cost; never inf / hard_static)
     landing_dist    metres to the nearest drone port, for degraded drones
 
 Dynamic layers change during the demo:

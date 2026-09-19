@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Next.js recreates these agent stubs on `next dev`; do not commit them
+AGENTS.md
+CLAUDE.md

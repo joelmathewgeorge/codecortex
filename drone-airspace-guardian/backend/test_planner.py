@@ -7,6 +7,7 @@ Uses AIR_TRAFFIC=replay and no scheduled helicopters so results do not depend on
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
@@ -16,7 +17,7 @@ os.environ.setdefault("AIR_TRAFFIC", "replay")
 import numpy as np  # noqa: E402
 
 from aircraft import Aircraft  # noqa: E402
-from config import ALT_MAX_M, DRONE_H_SEP_M, DRONE_V_SEP_M  # noqa: E402
+from config import ALT_MAX_M, DRONE_H_SEP_M, DRONE_V_SEP_M, ML_DIR  # noqa: E402
 from drones import Drone  # noqa: E402
 from sim import Simulation  # noqa: E402
 from trajectory import Motion, make_route  # noqa: E402
@@ -218,6 +219,47 @@ def test_no_fly_zone_ahead_is_flown_around_not_through():
     assert any(e["type"] == "NO_FLY_AVOIDED" for e in s.events.history())
 
 
+def test_lifting_emergency_restores_shortest_path():
+    """Drones detouring around an emergency must replan the shortest path when it is lifted."""
+    s = fresh()
+    open_airspace(s)
+    d = straight(s, "R1", A_START, A_END, 90.0, 18.0)
+    before = d.motion.route.length - d.motion.s
+    ahead = (A_START[0] + 1800.0, A_START[1])
+    lat, lon = s.world.frame.latlon(*ahead)
+    result = s.add_zone("emergency", lat, lon, 700.0)
+    assert "R1" in result["inside"] + result["approaching"]
+    detour = d.motion.route.length - d.motion.s
+    assert detour > before + 200.0, (before, detour)
+    assert d.route_kind in ("avoid", "escape")
+    s.remove_zone(result["zone"]["id"])
+    restored = d.motion.route.length - d.motion.s
+    assert restored < detour - 100.0, (detour, restored)
+    assert d.route_kind == "planned"
+    assert d.phase in ("cruise", "returning")
+    hard = s.riskmap.hard_static | s.riskmap.hard_zones
+    assert s.riskmap.first_entry_along(d.motion.route.remaining(d.motion.s), hard) is None
+    assert any(e["type"] == "ROUTE_GENERATED" and e["metadata"].get("reason") == "zone lifted" for e in s.events.history())
+
+
+def test_lifting_emergency_resumes_original_destination():
+    """If the destination sat inside the emergency, lifting it restores that mission."""
+    s = fresh()
+    open_airspace(s)
+    d = straight(s, "R2", A_START, A_END, 90.0, 18.0)
+    dest_name = d.destination.name
+    lat, lon = s.world.frame.latlon(*A_END)
+    result = s.add_zone("emergency", lat, lon, 700.0)
+    assert "R2" in result["inside"] + result["approaching"]
+    assert d.mission_type == "return"
+    assert d.resume_destination is not None
+    s.remove_zone(result["zone"]["id"])
+    assert d.destination.name == dest_name
+    assert d.mission_type == "parcel"
+    assert d.route_kind == "planned"
+    assert d.resume_destination is None
+
+
 def test_battery_and_health_change_the_weights():
     s = fresh()
     d = straight(s, "W1", A_START, A_END, 90.0, 18.0)
@@ -231,6 +273,43 @@ def test_battery_and_health_change_the_weights():
     d.health = 40.0
     worn = s.weights_for(d)
     assert worn.risk_scale > base.risk_scale and worn.landing > 0
+
+
+def test_auair_missions_are_reanchored_in_dubai():
+    path = ML_DIR / "auair_missions.json"
+    assert path.exists() and path.stat().st_size > 0
+    data = json.loads(path.read_text(encoding="utf-8"))
+    missions = data.get("missions") or []
+    assert len(missions) >= 3
+    for m in missions:
+        assert len(m.get("waypoints") or []) >= 4
+        for wp in m["waypoints"]:
+            assert 25.02 <= wp["lat"] <= 25.30
+            assert 55.10 <= wp["lon"] <= 55.43
+            assert 40.0 <= wp["alt_m"] <= 150.0
+    from sim import AUAIR_SEED_SLOTS, SEED_FLEET
+    assert AUAIR_SEED_SLOTS == (1, 3, 6)
+    assert [SEED_FLEET[i][0] for i in AUAIR_SEED_SLOTS] == ["parcel", "survey", "security"]
+
+
+def test_opensky_replay_has_raised_flight_count():
+    path = ML_DIR / "air_traffic.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    flights = data.get("flights") or []
+    assert len(flights) >= 12
+    kinds = {f["kind"] for f in flights}
+    assert "arrival" in kinds and "departure" in kinds
+
+
+def test_hard_static_untouched_without_dubai_layer():
+    """Dubai mosaic is not ingested. OSM hard cores stay identical; ground cost is finite."""
+    s = fresh()
+    hard = s.riskmap.hard_static.copy()
+    assert getattr(s.riskmap, "dubai_ground", None) is None
+    assert not hasattr(s.riskmap, "_apply_dubai_ground_cost")
+    assert np.array_equal(hard, s.riskmap.hard_static)
+    assert np.isfinite(s.riskmap.ground_static).all()
+    assert not np.isinf(s.riskmap.ground_static).any()
 
 
 if __name__ == "__main__":

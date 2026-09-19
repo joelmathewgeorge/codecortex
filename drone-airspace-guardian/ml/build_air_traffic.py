@@ -17,6 +17,7 @@ dubai_airspace.json:
               recorded climb-out from the point its first altitude implies.
 
 Output samples every 2 s: [t, lat, lon, alt_m, speed_ms, heading_deg, vrate_ms].
+Writes up to 12 arrivals + 8 departures (or every qualifying track if fewer).
 
 Run: python build_air_traffic.py        (OPENSKY_CSV overrides the capture path)
 """
@@ -41,8 +42,8 @@ GLIDE = math.tan(math.radians(3.0))
 CLIMB = 0.09  # ~5 degree initial climb gradient
 THRESHOLD_ALT = 15.0
 SAMPLE_S = 2.0
-MAX_ARRIVALS = 6
-MAX_DEPARTURES = 4
+MAX_ARRIVALS = 12
+MAX_DEPARTURES = 8
 
 
 def load_tracks(path: Path) -> list[dict]:
@@ -90,11 +91,11 @@ def load_tracks(path: Path) -> list[dict]:
 def pick(tracks: list[dict]) -> tuple[list[dict], list[dict]]:
     arrivals = [
         t for t in tracks
-        if t["alt"][-1] < t["alt"][0] - 250 and t["alt"].min() < 1200 and t["speed"].mean() < 130
+        if t["alt"][-1] < t["alt"][0] - 120 and t["alt"].min() < 2000 and t["speed"].mean() < 160
     ]
     departures = [
         t for t in tracks
-        if t["alt"][-1] > t["alt"][0] + 600 and t["alt"][0] < 1600 and t["vrate"].max() > 4
+        if t["alt"][-1] > t["alt"][0] + 300 and t["vrate"].max() > 2
     ]
     arrivals.sort(key=lambda t: t["alt"].min())
     departures.sort(key=lambda t: t["alt"][0])
