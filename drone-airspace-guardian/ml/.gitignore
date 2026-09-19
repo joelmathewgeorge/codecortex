@@ -37,3 +37,5 @@ opensky_trajectories.csv
 
 yolo_data/
 runs/
+colab_bundle/
+colab_bundle.zip

@@ -639,6 +639,9 @@ input:focus-visible {
 }
 
 .stage-bar {
+  position: relative;
+  z-index: 3;
+  isolation: isolate;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -735,6 +738,10 @@ input:focus-visible {
 
 .map-frame {
   position: relative;
+  z-index: 0;
+  isolation: isolate;
+  contain: layout paint;
+  overflow: hidden;
   flex: 1 1 auto;
   min-height: 0;
   background: #071018;
@@ -743,10 +750,13 @@ input:focus-visible {
 .airspace-map {
   position: absolute;
   inset: 0;
+  z-index: 0;
+  overflow: hidden;
   background: #071018;
 }
 
 .airspace-map.leaflet-container {
+  z-index: 0;
   font-family: var(--sans);
   background: #071018;
 }

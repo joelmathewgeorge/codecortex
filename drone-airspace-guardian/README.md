@@ -128,17 +128,16 @@ Raw captures are not in git. Point the build/train scripts at local copies.
 | OSM / Overpass | `ml/build_airspace.py` → `dubai_airspace.json` | Yes — 39 restricted polygons, 8 ports, roads, water |
 | OpenSky | Live poll + `ml/build_air_traffic.py` → `air_traffic.json` (8 flights at DXB 30L) | Yes as manned traffic. Not drone paths |
 | NASA C-MAPSS FD001–FD004 | `rul_model.joblib` (HistGradientBoosting, RMSE 14.78 cycles) | Yes — `health_bridge.py` on synthetic traces |
-| VisDrone2019-DET | `yolov8n_airspace.pt`, mAP50 **0.2863** | Yes as the detector; frames optional fallback |
+| VisDrone2019-DET | `yolov8n_airspace.pt`, mAP50 **0.3182** | Yes as the detector; frames optional fallback |
 | AU-AIR | `export_auair_frames.py` → `ml/auair_frames/` (gitignored) | Yes when exported |
-| `frontend/public/dubai/tile-*.png` | Old overlay plates | **Not used** (Esri base map) |
 
-Health training: `ml/train_model.py`, `ml/sanity_check.py` (`ml/README.md`). Detector: `ml/train_yolov8n.py`.
+Health training (optional, not needed to demo): `ml/train_model.py`, `ml/sanity_check.py` (`ml/README.md`). Detector already ships in `ml/weights/`; `ml/train_yolov8n.py` is optional.
 
 ## Known limitations
 
 - Software fleet. No C2, no physical UAV.
 - OpenSky replay is airliner ADS-B re-anchored to DXB. Live OpenSky may need `AIR_TRAFFIC=replay`.
 - Health is turbofan RUL; battery is a separate energy model (`drones.py`).
-- Cameras replay stills. YOLO mAP50 0.2863. AU-AIR frames are local-only.
+- Cameras replay stills. YOLO mAP50 0.3182. AU-AIR frames are local-only.
 - In-memory state. Restart wipes the fleet, zones, and log.
-- Leftover older UI files (`AirspaceDashboard`, `MapControls`, `fake-simulator`) are unused; `app/page.tsx` mounts `Console`.
+- Live UI is `app/page.tsx` → `Console`.

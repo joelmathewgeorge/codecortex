@@ -142,9 +142,8 @@ Raw dumps stay off git. Training scripts default to local copies under `C:\Users
 | OpenStreetMap (Overpass) | `ml/build_airspace.py` → `ml/dubai_airspace.json` — restricted polygons, ports, roads, water mask | **Yes.** ODbL 1.0 |
 | OpenSky Network | Live box around Dubai; replay file is eight arrivals/departures re-anchored to DXB runway **30L** | **Yes**, as *manned traffic*, not as drone missions. `AIR_TRAFFIC=replay` if live poll fails |
 | NASA C-MAPSS FD001–FD004 | Train `ml/rul_model.joblib` (HistGradientBoosting: held-out RMSE **14.78** cycles, MAE 10.50, R² 0.877) | **Yes** — synthetic traces scored each health cycle. Not onboard UAV sensors |
-| VisDrone2019-DET | Fine-tune YOLOv8n → `ml/weights/yolov8n_airspace.pt` | **Yes** as the detector. Val **mAP50 0.2863** (8 epochs, 512×512 crops, 924/107 images) |
+| VisDrone2019-DET | Fine-tune YOLOv8n → `ml/weights/yolov8n_airspace.pt` | **Yes** as the detector. Val **mAP50 0.3182** (VisDrone-only val; 512×512 crops). Training is optional and not required to run the demo. |
 | AU-AIR | Low-altitude road footage for six ground-monitor cameras (`ml/export_auair_frames.py`) | **Yes when exported.** Frames are gitignored (licence asks for links, not rebundling). Else VisDrone stills, or MEDIUM with an empty camera |
-| Dubai aerial plates `frontend/public/dubai/tile-*.png` | Leftover overlay assets | **Not used.** Live map is Esri World Imagery |
 
 ## Team
 
@@ -162,7 +161,7 @@ Folder ownership is [`.github/CODEOWNERS`](.github/CODEOWNERS). Stay in your dir
 - OpenSky live traffic is real ADS-B; replay tracks are **airliner** state vectors re-anchored to DXB, not Dubai drone flights. Anonymous OpenSky often rate-limits — use `AIR_TRAFFIC=replay`.
 - Scheduled helicopters (MEDEVAC / POLICE / TOUR) are scripted on OSM hospitals and E11, not live rotorcraft.
 - Health is a **turbofan** RUL model on stand-in traces. Battery is a separate energy model. Real airframe telemetry would need a new training set.
-- Ground cameras are not a live gimbal. They replay AU-AIR (or VisDrone) stills. VisDrone is street-level aerial traffic, not Dubai and not drone-vs-drone. **mAP50 = 0.2863** — modest, not production detection.
+- Ground cameras are not a live gimbal. They replay AU-AIR (or VisDrone) stills. VisDrone is street-level aerial traffic, not Dubai and not drone-vs-drone. **mAP50 = 0.3182** — modest, not production detection.
 - Planner numbers (150 m cells, 150/30 m drone separation, cost table) are demo policy, not certified UTM.
 - Zones, fleet, and the event log are in-memory and vanish on process restart.
-- Leftover files from an older dashboard (`AirspaceDashboard`, `MapControls`, mock simulator) are **not** on the live route. `app/page.tsx` mounts `Console`.
+- Live UI is `app/page.tsx` → `Console`.

@@ -71,6 +71,8 @@ class Drone:
     route_version: int = 0
     distance_flown: float = 0.0
     abort_reason: str | None = None
+    resume_destination: Place | None = None
+    resume_mission_type: str | None = None
     created_at: float = 0.0
     announced: dict = field(default_factory=dict)
     route_cells: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))

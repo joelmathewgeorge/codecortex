@@ -16,7 +16,7 @@ const ibm = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: { default: "Airspace Guardian", template: "%s | Airspace Guardian" },
+  title: { default: "AirGuard", template: "%s | AirGuard" },
   description: "Dubai drone operations: weighted A* routing, 4-D conflict prediction and emergency escape over real restricted airspace.",
 };
 

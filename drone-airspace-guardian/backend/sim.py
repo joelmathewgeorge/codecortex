@@ -491,6 +491,8 @@ class Simulation:
         for z in dropped:
             self.events.emit("ZONE_CLEARED", f"{z.label} ({z.id}) lifted to make room for {zone.id}.", zone=z.id)
         self.riskmap.set_zones(self.zones.zones)
+        if dropped:
+            self._restore_routes_after_zones_cleared(dropped)
 
         air = self.airborne()
         inside = [d for d in air if zone.contains(d.x, d.y)]
@@ -534,6 +536,8 @@ class Simulation:
             raise KeyError(zone_id)
         self.riskmap.set_zones(self.zones.zones)
         self.events.emit("ZONE_CLEARED", f"{zone.label} ({zone.id}) lifted by the operator.", zone=zone.id)
+        self._restore_routes_after_zones_cleared([zone])
+        self.conflicts.update()
         return {"removed": zone.id}
 
     def set_speed(self, speed: int) -> None:
@@ -860,6 +864,7 @@ class Simulation:
         d.rejoin_s = plan.rejoin_s
         d.maneuver = {"kind": "escape", "label": f"Escaping {zone.label}", "since": self.now, "exit_s": plan.escape_m}
         if plan.divert:
+            self._stash_mission(d)
             d.destination = plan.divert
             d.mission_type = "return"
             self.events.emit(
@@ -906,6 +911,7 @@ class Simulation:
         d.rejoin_s = rejoin_s
         d.maneuver = {"kind": "avoid", "label": f"Avoiding {hazard}", "hazard": hazard}
         if divert:
+            self._stash_mission(d)
             d.destination = divert
             d.mission_type = "return"
             d.phase = "returning"
@@ -923,6 +929,93 @@ class Simulation:
             extra_m=extra,
         )
         self.on_route_changed(d)
+
+    def _stash_mission(self, d: Drone) -> None:
+        """Remember the pre-zone mission so lifting the zone can restore it."""
+        if d.resume_destination is None and d.mission_type != "return":
+            d.resume_destination = d.destination
+            d.resume_mission_type = d.mission_type
+
+    def _resume_stashed_mission(self, d: Drone) -> bool:
+        dest = d.resume_destination
+        if dest is None:
+            return False
+        if any(z.contains(dest.x, dest.y, margin=z.buffer) for z in self.zones.zones):
+            return False
+        d.destination = dest
+        d.mission_type = d.resume_mission_type or d.mission_type
+        d.resume_destination = None
+        d.resume_mission_type = None
+        return True
+
+    def _is_zone_detour(self, d: Drone, cleared_ids: set[str]) -> bool:
+        """True when this drone is flying around a demo zone rather than its nominal route."""
+        if d.resume_destination is not None:
+            return True
+        if d.phase in ("escaping", "rejoining"):
+            return True
+        if d.route_kind in ("avoid", "escape"):
+            return True
+        if d.escape_zone and (d.escape_zone in cleared_ids or all(z.id != d.escape_zone for z in self.zones.zones)):
+            return True
+        kind = (d.maneuver or {}).get("kind")
+        return kind in ("avoid", "escape", "rejoin")
+
+    def _restore_routes_after_zones_cleared(self, cleared) -> None:
+        """Replan zone detours to the shortest path now that those zones are gone."""
+        if not cleared:
+            return
+        ids = {z.id for z in cleared}
+        hard = self.riskmap.hard_static | self.riskmap.hard_zones
+        for d in self.airborne():
+            remaining_zone = next((z for z in self.zones.zones if z.contains(d.x, d.y)), None)
+            if remaining_zone is not None:
+                if d.phase != "escaping" or d.escape_zone != remaining_zone.id:
+                    self._start_escape(d, remaining_zone)
+                continue
+            if not self._is_zone_detour(d, ids):
+                continue
+            ahead = d.motion.route.remaining(d.motion.s)
+            if len(ahead) >= 2 and self.riskmap.first_entry_along(ahead, hard) is not None:
+                self._avoid(d, {})
+                continue
+            self._replan_to_destination(d, "zone lifted")
+
+    def _replan_to_destination(self, d: Drone, reason: str) -> None:
+        """A* from here to the (restored) destination. Skip only if that would lengthen the same mission."""
+        m = d.motion
+        if m is None:
+            return
+        resumed = self._resume_stashed_mission(d)
+        plan = self.plan_for(d, (d.x, d.y), (d.destination.x, d.destination.y))
+        if plan is None:
+            return
+        remaining = max(0.0, m.route.length - m.s)
+        if not resumed and plan.length > remaining + self.riskmap.cell:
+            return
+        self._replans.pop(d.id, None)
+        speed = d.cruise_speed if d.phase == "escaping" else m.speed
+        route = self.build_route(d, plan.xy, start_alt=d.alt, speed=speed)
+        kind = "return" if d.mission_type == "return" else "planned"
+        d.set_motion(Motion(route, 0.0, speed, d.alt), kind)
+        d.original = route
+        d.rejoin_s = None
+        d.escape_zone = None
+        if d.phase in ("escaping", "rejoining", "returning") and kind == "planned":
+            d.phase = "cruise"
+        elif d.phase in ("escaping", "rejoining"):
+            d.phase = "returning" if kind == "return" else "cruise"
+        if d.maneuver and d.maneuver.get("kind") in ("avoid", "rejoin", "detour", "escape", "hold"):
+            d.maneuver = None
+        self.on_route_changed(d)
+        self.events.emit(
+            "ROUTE_GENERATED",
+            f"{d.id} restored shortest route after {reason}: {route.length / 1000:.1f} km ({route.length - remaining:+.0f} m).",
+            drone=d.id,
+            reason=reason,
+            length_m=route.length,
+            extra_m=route.length - remaining,
+        )
 
     def _reweight(self, d: Drone, reason: str) -> None:
         m = d.motion

@@ -14,7 +14,9 @@ AU-AIR holdout mAP50 is recorded separately and is never mixed into that number.
 Who reads the artifact: backend/vision_bridge.py loads weights/yolov8n_airspace.pt;
 the operator sees detections on GroundCamera. Metrics land in vision_metrics.json.
 
-RUN
+The demo loads shipped `weights/yolov8n_airspace.pt`. Do not run this script to start the console.
+
+RUN (optional retrain only)
     cd ml
     venv\\Scripts\\python.exe train_yolov8n.py              # prepare + train + export
     venv\\Scripts\\python.exe train_yolov8n.py --frames-only # re-export demo frames only

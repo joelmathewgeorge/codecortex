@@ -219,6 +219,47 @@ def test_no_fly_zone_ahead_is_flown_around_not_through():
     assert any(e["type"] == "NO_FLY_AVOIDED" for e in s.events.history())
 
 
+def test_lifting_emergency_restores_shortest_path():
+    """Drones detouring around an emergency must replan the shortest path when it is lifted."""
+    s = fresh()
+    open_airspace(s)
+    d = straight(s, "R1", A_START, A_END, 90.0, 18.0)
+    before = d.motion.route.length - d.motion.s
+    ahead = (A_START[0] + 1800.0, A_START[1])
+    lat, lon = s.world.frame.latlon(*ahead)
+    result = s.add_zone("emergency", lat, lon, 700.0)
+    assert "R1" in result["inside"] + result["approaching"]
+    detour = d.motion.route.length - d.motion.s
+    assert detour > before + 200.0, (before, detour)
+    assert d.route_kind in ("avoid", "escape")
+    s.remove_zone(result["zone"]["id"])
+    restored = d.motion.route.length - d.motion.s
+    assert restored < detour - 100.0, (detour, restored)
+    assert d.route_kind == "planned"
+    assert d.phase in ("cruise", "returning")
+    hard = s.riskmap.hard_static | s.riskmap.hard_zones
+    assert s.riskmap.first_entry_along(d.motion.route.remaining(d.motion.s), hard) is None
+    assert any(e["type"] == "ROUTE_GENERATED" and e["metadata"].get("reason") == "zone lifted" for e in s.events.history())
+
+
+def test_lifting_emergency_resumes_original_destination():
+    """If the destination sat inside the emergency, lifting it restores that mission."""
+    s = fresh()
+    open_airspace(s)
+    d = straight(s, "R2", A_START, A_END, 90.0, 18.0)
+    dest_name = d.destination.name
+    lat, lon = s.world.frame.latlon(*A_END)
+    result = s.add_zone("emergency", lat, lon, 700.0)
+    assert "R2" in result["inside"] + result["approaching"]
+    assert d.mission_type == "return"
+    assert d.resume_destination is not None
+    s.remove_zone(result["zone"]["id"])
+    assert d.destination.name == dest_name
+    assert d.mission_type == "parcel"
+    assert d.route_kind == "planned"
+    assert d.resume_destination is None
+
+
 def test_battery_and_health_change_the_weights():
     s = fresh()
     d = straight(s, "W1", A_START, A_END, 90.0, 18.0)

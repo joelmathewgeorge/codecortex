@@ -24,7 +24,7 @@ export default function TopBar() {
       <div className="brand">
         <span className="brand-mark" aria-hidden="true" />
         <div>
-          <p className="brand-name">Airspace Guardian</p>
+          <p className="brand-name">AirGuard</p>
           <p className="brand-sub">Dubai drone operations</p>
         </div>
       </div>
