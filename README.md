@@ -1,4 +1,4 @@
-# Airspace Guardian
+# AirGuard
 
 **A BVLOS operations console for Downtown Dubai.** Simulated delivery drones fly missions over real OpenStreetMap restricted airspace while an operator adds traffic, draws no-fly rings, and drops placeable emergencies — and the planner detours, deconflicts, or escapes without a joystick.
 
